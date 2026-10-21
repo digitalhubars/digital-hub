@@ -1,28 +1,35 @@
 import { useState } from 'react';
-import { Download } from 'lucide-react';
+import { DollarSign, Download, FileDown, Receipt, ShoppingCart, TriangleAlert } from 'lucide-react';
 import Button from '../../components/ui/Button';
-import { Card } from '../../components/ui/Card';
+import { Card, StatCard } from '../../components/ui/Card';
 import DataTable from '../../components/ui/DataTable';
 import PageHeader from '../../components/ui/PageHeader';
+import PeriodSelect from '../../components/ui/PeriodSelect';
 import Select from '../../components/ui/Select';
 import { useApp } from '../../context/AppContext';
 import { PLATFORM_NAMES } from '../../data/platforms';
-import { downloadCsv } from '../../lib/format';
+import { downloadCsv, formatDate } from '../../lib/format';
+import { downloadPdf } from '../../lib/pdf';
 import { ORDER_STATUSES, STATUS } from '../../styles/ui';
+import { orderSummary } from '../dashboard/useDashboardData';
 import { orderColumns } from './orderColumns';
 
 export default function OrdersPage() {
-  const { role, access, scopedStores, storeIds, storeOf, customerOf, orders, money, q, openDrawer } = useApp();
+  const { role, access, scopedStores, storeIds, storeOf, customerOf, orders, products, settings, money, q, openDrawer, period } = useApp();
   const [storeFilter, setStoreFilter] = useState('all');
   const [platformFilter, setPlatformFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
 
   const platforms = PLATFORM_NAMES.filter((name) => scopedStores.some((s) => s.platform === name && storeIds.includes(s.id)));
-  const rows = orders.filter(
+  const inStores = (storeId) =>
+    storeIds.includes(storeId) && (storeFilter === 'all' || storeId === storeFilter) && (platformFilter === 'all' || storeOf(storeId)?.platform === platformFilter);
+
+  // The cards follow the period, store and platform filters (not status or search).
+  const summary = orderSummary(orders.filter((o) => inStores(o.storeId)), period);
+  const lowStock = products.filter((p) => inStores(p.storeId) && p.stock != null && p.stock < settings.lowStockThreshold);
+
+  const rows = summary.inPeriod.filter(
     (o) =>
-      storeIds.includes(o.storeId) &&
-      (storeFilter === 'all' || o.storeId === storeFilter) &&
-      (platformFilter === 'all' || storeOf(o.storeId)?.platform === platformFilter) &&
       (statusFilter === 'all' || o.status === statusFilter) &&
       (!q || [o.number, customerOf(o.customerId)?.name, storeOf(o.storeId)?.name].some((v) => String(v).toLowerCase().includes(q))),
   );
@@ -37,9 +44,46 @@ export default function OrdersPage() {
         store: storeOf(o.storeId)?.name,
         platform: storeOf(o.storeId)?.platform,
         status: o.status,
-        total: o.total.toFixed(2),
+        total: Number(o.total || 0).toFixed(2),
       })),
     );
+
+  const stats = [
+    ['Total orders', summary.counted.length],
+    ['Total sales', money(summary.sales)],
+    ['Average order', money(summary.averageOrder)],
+    ['Low stock', lowStock.length],
+  ];
+
+  const exportPdf = () =>
+    downloadPdf({
+      title: 'Orders',
+      subtitle: [
+        summary.periodName,
+        storeFilter === 'all' ? 'All stores' : storeOf(storeFilter)?.name,
+        platformFilter === 'all' ? null : platformFilter,
+        statusFilter === 'all' ? null : STATUS[statusFilter][0],
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      workspace: settings.workspaceName,
+      filename: 'orders',
+      stats,
+      sections: [
+        {
+          columns: ['Order', 'Date', 'Customer', 'Store', 'Platform', 'Status', 'Total'],
+          rows: rows.map((o) => [
+            o.number,
+            formatDate(o.placedAt),
+            customerOf(o.customerId)?.name || '',
+            storeOf(o.storeId)?.name || '',
+            storeOf(o.storeId)?.platform || '',
+            STATUS[o.status]?.[0] || o.status,
+            money(o.total),
+          ]),
+        },
+      ],
+    });
 
   return (
     <div className="space-y-4">
@@ -47,13 +91,35 @@ export default function OrdersPage() {
         title="Orders"
         description={role === 'client' ? 'Orders placed in your stores. Tap an order for details.' : 'Tap an order to see items and update its status.'}
         actions={
-          access.exportData && (
-            <Button onClick={exportCsv}>
-              <Download size={15} /> Export
-            </Button>
-          )
+          <>
+            <PeriodSelect className="w-40" />
+            {access.exportData && (
+              <>
+                <Button onClick={exportPdf}>
+                  <FileDown size={15} /> PDF
+                </Button>
+                <Button onClick={exportCsv}>
+                  <Download size={15} /> CSV
+                </Button>
+              </>
+            )}
+          </>
         }
       />
+
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+        <StatCard label="Total orders" value={summary.counted.length} hint={`${summary.waitingToShip} waiting to ship`} icon={Receipt} />
+        <StatCard label="Total sales" value={money(summary.sales)} hint={summary.periodName} icon={DollarSign} />
+        <StatCard label="Average order" value={money(summary.averageOrder)} hint="Refunds and cancellations left out" icon={ShoppingCart} />
+        <StatCard
+          label="Low stock"
+          value={lowStock.length}
+          hint={`Under ${settings.lowStockThreshold} units`}
+          icon={TriangleAlert}
+          tone={lowStock.length ? 'warning' : undefined}
+        />
+      </div>
+
       <Card
         title={`${rows.length} order${rows.length === 1 ? '' : 's'}`}
         action={
@@ -91,7 +157,7 @@ export default function OrdersPage() {
           rows={rows}
           pageSize={10}
           onRowClick={(o) => openDrawer('order', o.id)}
-          empty="No orders match these filters."
+          empty={period === 'all' ? 'No orders match these filters.' : `No orders ${summary.periodName.toLowerCase()} match these filters.`}
         />
       </Card>
     </div>

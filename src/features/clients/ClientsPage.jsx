@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Building2, CircleCheck, Eye, Lock, Mail, Pause, Pencil, Play, Store, Trash2, UserPlus } from 'lucide-react';
+import { Building2, CircleCheck, Eye, FileDown, Lock, Mail, Pause, Pencil, Play, Store, Trash2, UserPlus } from 'lucide-react';
 import ActionMenu from '../../components/ui/ActionMenu';
 import { Badge, PlatformDot } from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
@@ -9,6 +9,7 @@ import PageHeader from '../../components/ui/PageHeader';
 import SearchInput from '../../components/ui/SearchInput';
 import Select from '../../components/ui/Select';
 import { useApp } from '../../context/AppContext';
+import { downloadPdf } from '../../lib/pdf';
 import { ui } from '../../styles/ui';
 import ClientModal, { CLIENT_PERMISSIONS } from './ClientModal';
 import ManageAccessDrawer from './ManageAccessDrawer';
@@ -20,7 +21,7 @@ const permissionSummary = (permissions) => {
 
 // Used as the sidebar "Clients" page and, `embedded`, inside Settings → Clients & access.
 export default function ClientsPage({ embedded }) {
-  const { clients, storeOf, q, deleteClient, setClientStatus, resendInvite, viewAsClient, askConfirm } = useApp();
+  const { clients, storeOf, q, deleteClient, setClientStatus, resendInvite, viewAsClient, askConfirm, settings } = useApp();
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [editing, setEditing] = useState(null);
@@ -33,6 +34,33 @@ export default function ClientsPage({ embedded }) {
   const count = (status) => clients.filter((c) => c.status === status).length;
   const accessClient = accessFor && clients.find((c) => c.id === accessFor);
 
+  const exportPdf = () =>
+    downloadPdf({
+      title: 'Clients',
+      subtitle: `${rows.length} client${rows.length === 1 ? '' : 's'}`,
+      workspace: settings.workspaceName,
+      filename: 'clients',
+      stats: [
+        ['Total clients', clients.length],
+        ['Active', count('active')],
+        ['Invited', count('invited')],
+        ['Suspended', count('suspended')],
+      ],
+      sections: [
+        {
+          columns: ['Company', 'Contact', 'Email', 'Phone', 'Status', 'Stores'],
+          rows: rows.map((c) => [
+            c.company,
+            c.contact || '',
+            c.email || '',
+            c.phone || '',
+            c.status.charAt(0).toUpperCase() + c.status.slice(1),
+            c.storeIds.map(storeOf).filter(Boolean).map((s) => s.name).join(', '),
+          ]),
+        },
+      ],
+    });
+
   return (
     <div className="space-y-4">
       {!embedded && (
@@ -40,9 +68,14 @@ export default function ClientsPage({ embedded }) {
           title="Clients"
           description="Create client accounts and choose exactly which stores each one can see."
           actions={
-            <Button variant="primary" onClick={() => setEditing({})}>
-              <UserPlus size={15} /> New client
-            </Button>
+            <>
+              <Button onClick={exportPdf}>
+                <FileDown size={15} /> PDF
+              </Button>
+              <Button variant="primary" onClick={() => setEditing({})}>
+                <UserPlus size={15} /> New client
+              </Button>
+            </>
           }
         />
       )}

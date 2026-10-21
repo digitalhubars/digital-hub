@@ -7,6 +7,7 @@ import { toRow } from '../lib/db/schema';
 import { callApi, supabase } from '../lib/supabase/client';
 import { useLiveList, useWorkspaceSettings } from '../lib/supabase/live';
 import { diffFields, formatMoney, uid } from '../lib/format';
+import { DEFAULT_PERIOD, PERIODS } from '../lib/period';
 import { loadSampleData as seedSampleData, removeSampleData as clearSampleData } from '../lib/sampleData';
 import { restoreBackup, workspaceToFile } from '../lib/storage';
 import { STATUS } from '../styles/ui';
@@ -126,6 +127,24 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
 
   // ---- UI state ------------------------------------------------------------
   const [search, setSearch] = useState('');
+
+  // Date period for the Dashboard and Orders page (remembered in this browser).
+  const [period, setPeriodState] = useState(() => {
+    try {
+      const saved = localStorage.getItem('digital-hub:period');
+      return PERIODS.some((p) => p.value === saved) ? saved : DEFAULT_PERIOD;
+    } catch {
+      return DEFAULT_PERIOD;
+    }
+  });
+  const setPeriod = (value) => {
+    setPeriodState(value);
+    try {
+      localStorage.setItem('digital-hub:period', value);
+    } catch {
+      // ignore
+    }
+  };
   const [syncingStores, setSyncingStores] = useState({}); // storeId -> true while syncing
   const [drawer, setDrawer] = useState(null); // { type: 'order' | 'customer', id }
   const [confirmDialog, setConfirmDialog] = useState(null);
@@ -628,7 +647,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
     stores, groups, scopedStores, storeIds, selectedStores, setSelectedStores, storeOf, customerOf,
     products, orders, customers, clients, team, users, settings, activity, notifications, sessions, setSessions,
     // navigation & ui
-    page, settingsTab, go, mainRef, search, setSearch, q: search.trim().toLowerCase(),
+    page, settingsTab, go, mainRef, search, setSearch, q: search.trim().toLowerCase(), period, setPeriod,
     dark, themePref, setThemePref, toggleTheme, money,
     syncing, syncingStores, toast, showToast, dismissToast, log, markAllRead,
     confirmDialog, askConfirm, closeConfirm, drawer, openDrawer, closeDrawer,

@@ -1,4 +1,4 @@
-import { Download } from 'lucide-react';
+import { Download, FileDown } from 'lucide-react';
 import { StoreBadge } from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import { Card } from '../../components/ui/Card';
@@ -6,10 +6,11 @@ import DataTable from '../../components/ui/DataTable';
 import PageHeader from '../../components/ui/PageHeader';
 import { useApp } from '../../context/AppContext';
 import { downloadCsv, formatDate } from '../../lib/format';
+import { downloadPdf } from '../../lib/pdf';
 import { ui } from '../../styles/ui';
 
 export default function CustomersPage() {
-  const { access, storeIds, storeOf, customers, money, q, openDrawer } = useApp();
+  const { access, storeIds, storeOf, customers, money, q, openDrawer, settings } = useApp();
 
   const rows = customers
     .filter(
@@ -25,6 +26,32 @@ export default function CustomersPage() {
       rows.map((c) => ({ name: c.name, email: c.email, store: storeOf(c.storeId)?.name, orders: c.orderCount, spent: c.spent.toFixed(2) })),
     );
 
+  const exportPdf = () =>
+    downloadPdf({
+      title: 'Customers',
+      subtitle: `${rows.length} customer${rows.length === 1 ? '' : 's'}`,
+      workspace: settings.workspaceName,
+      filename: 'customers',
+      stats: [
+        ['Customers', rows.length],
+        ['With orders', rows.filter((c) => c.orderCount > 0).length],
+        ['Total spent', money(rows.reduce((sum, c) => sum + c.spent, 0))],
+      ],
+      sections: [
+        {
+          columns: ['Name', 'Email', 'Store', 'Orders', 'Spent', 'Last order'],
+          rows: rows.map((c) => [
+            c.name,
+            c.email || '',
+            storeOf(c.storeId)?.name || '',
+            String(c.orderCount),
+            money(c.spent),
+            c.lastOrder ? formatDate(c.lastOrder) : '',
+          ]),
+        },
+      ],
+    });
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -32,9 +59,14 @@ export default function CustomersPage() {
         description="Customer totals are calculated from synced orders."
         actions={
           access.exportData && (
-            <Button onClick={exportCsv}>
-              <Download size={15} /> Export
-            </Button>
+            <>
+              <Button onClick={exportPdf}>
+                <FileDown size={15} /> PDF
+              </Button>
+              <Button onClick={exportCsv}>
+                <Download size={15} /> CSV
+              </Button>
+            </>
           )
         }
       />

@@ -5,15 +5,21 @@ import { Card, StatCard } from '../../components/ui/Card';
 import PageHeader from '../../components/ui/PageHeader';
 import { useApp } from '../../context/AppContext';
 import { ui } from '../../styles/ui';
-import { LowStockStat, OrdersStat, RecentOrdersCard, SalesChartCard, SalesStat } from './DashboardParts';
+import { DashboardActions, LowStockStat, OrdersStat, RecentOrdersCard, SalesChartCard, SalesStat } from './DashboardParts';
 import LowStockCard from './LowStockCard';
 import StoreHealthList from './StoreHealthList';
 import useDashboardData from './useDashboardData';
 
 // Only the client's own stores; no integration controls or activity log.
 export default function ClientDashboard() {
-  const { access, client, user, settings } = useApp();
+  const { access, client, user, settings, money } = useApp();
   const data = useDashboardData();
+  const stats = [
+    [`Sales, ${data.periodName.toLowerCase()}`, money(data.sales)],
+    ['Orders', data.counted.length],
+    ['Products', data.visibleProducts.length],
+    ['Low stock', data.lowStock.length],
+  ];
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -21,11 +27,14 @@ export default function ClientDashboard() {
         title={client.company}
         description={`Signed in as ${user.name}.`}
         actions={
-          !access.editProducts && (
-            <Badge tone="neutral">
-              <Eye size={12} className="mr-1" /> View only
-            </Badge>
-          )
+          <>
+            {!access.editProducts && (
+              <Badge tone="neutral">
+                <Eye size={12} className="mr-1" /> View only
+              </Badge>
+            )}
+            <DashboardActions data={data} title={client.company} stats={stats} />
+          </>
         }
       />
 

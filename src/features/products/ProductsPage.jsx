@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Download, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { Download, FileDown, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { Badge, StoreBadge } from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import Callout from '../../components/ui/Callout';
@@ -10,6 +10,7 @@ import Select from '../../components/ui/Select';
 import { useApp } from '../../context/AppContext';
 import { PLATFORM_NAMES } from '../../data/platforms';
 import { downloadCsv } from '../../lib/format';
+import { downloadPdf } from '../../lib/pdf';
 import { ui } from '../../styles/ui';
 import ProductModal from './ProductModal';
 
@@ -130,6 +131,36 @@ export default function ProductsPage() {
       })),
     );
 
+  const exportPdf = () => {
+    const low = rows.filter((p) => p.stock != null && p.stock < settings.lowStockThreshold).length;
+    return downloadPdf({
+      title: 'Products',
+      subtitle: `${rows.length} product${rows.length === 1 ? '' : 's'}`,
+      workspace: settings.workspaceName,
+      filename: 'products',
+      stats: [
+        ['Products', rows.length],
+        ['Active', rows.filter((p) => p.status === 'active').length],
+        ['Stock value', money(rows.reduce((sum, p) => sum + (Number(p.price) || 0) * (Number(p.stock) || 0), 0))],
+        ['Low stock', low],
+      ],
+      sections: [
+        {
+          columns: ['Product', 'SKU', 'Category', 'Store', 'Status', 'Stock', 'Price'],
+          rows: rows.map((p) => [
+            p.title,
+            p.sku || '',
+            p.category || '',
+            storeOf(p.storeId)?.name || '',
+            p.status === 'out_of_stock' ? 'Out of stock' : p.status === 'draft' ? 'Draft' : 'Active',
+            p.stock == null ? 'Not tracked' : String(p.stock),
+            money(p.price),
+          ]),
+        },
+      ],
+    });
+  };
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -140,9 +171,14 @@ export default function ProductsPage() {
         actions={
           <>
             {access.exportData && (
-              <Button onClick={exportCsv}>
-                <Download size={15} /> Export
-              </Button>
+              <>
+                <Button onClick={exportPdf}>
+                  <FileDown size={15} /> PDF
+                </Button>
+                <Button onClick={exportCsv}>
+                  <Download size={15} /> CSV
+                </Button>
+              </>
             )}
             {access.addProducts && scopedStores.length > 0 && (
               <Button variant="primary" onClick={() => setEditing({})}>

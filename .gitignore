@@ -13,3 +13,4 @@ dist
 # Supabase CLI local state
 supabase/.temp
 supabase/.branches
+.next-check
