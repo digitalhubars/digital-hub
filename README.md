@@ -1,6 +1,6 @@
 # Digital Hub CRM
 
-Next.js 14 + Tailwind, hosted on **Vercel**, with **Supabase** as the back end (project `tepkgonqyqcdjwlsmwft`):
+Next.js 14 + Tailwind, hosted on **Vercel**, with **Supabase** as the back end (project `mdsitvmzqznuzgdwcrll`):
 
 | Part | What it does |
 | ---- | ------------ |
@@ -44,7 +44,7 @@ The owner (`src/config/owner.js`, and `owner_emails()` in the migration) becomes
 
 ```
 npx supabase login                                   # once, opens the browser
-npx supabase link --project-ref tepkgonqyqcdjwlsmwft # once, asks for the database password
+npx supabase link --project-ref mdsitvmzqznuzgdwcrll # once, asks for the database password
 npx supabase migration new <name>                    # write SQL in supabase/migrations
 npx supabase db push                                 # apply new migrations to the live project
 npx supabase config push                             # apply auth settings from supabase/config.toml
