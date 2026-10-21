@@ -1,21 +1,21 @@
 # Digital Hub CRM
 
-Next.js 14 + Tailwind front end, **Firebase** back end (project `digital-hub-4`):
+Next.js 14 + Tailwind, hosted on **Vercel**, with **Supabase** as the back end (project `tepkgonqyqcdjwlsmwft`):
 
 | Part | What it does |
 | ---- | ------------ |
-| Firebase Authentication | Email + password sign-in, reset emails, email confirmation |
-| Cloud Firestore (asia-southeast1) | Stores, products, orders, customers, clients, users — live on every open screen |
-| Cloud Functions (asia-southeast1) | Talks to WooCommerce and holds the API keys (needs the Blaze plan) |
-| Firebase Hosting | Serves the site (static export in `out/`) |
+| Supabase Auth | Email + password sign-in, confirmation and password-reset emails |
+| Supabase Postgres + Realtime | Stores, products, orders, customers, clients, profiles — live on every open screen |
+| Row Level Security | Who sees and changes what (`supabase/migrations`) |
+| Next.js API routes (`src/app/api`) | Talk to WooCommerce, hold the API keys, manage sign-in accounts |
 
 ## Live WooCommerce sync
 
 - **Connect:** Integrations → Add integration → WooCommerce, paste the site URL and a Read/Write consumer key + secret. Digital Hub imports products, orders and customers and creates webhooks in the store.
-- **Digital Hub → WooCommerce:** product edits (title, SKU, price, stock, status, category), new products, deletes and order status changes are sent within seconds by the `onProductWritten` / `onOrderWritten` functions.
-- **WooCommerce → Digital Hub:** the store's webhooks call `wooWebhook` (signed with a per-store secret); changes appear on every open screen.
-- **Safety net:** `scheduledWooSync` pulls anything changed in the last 15 minutes.
-- API keys are written to `storeSecrets/{id}`, which the browser can write but never read.
+- **Digital Hub → WooCommerce:** product edits (title, SKU, price, stock, status, category), new products, deletes and order status changes are saved as `pending`, then sent by `/api/sync/push`.
+- **WooCommerce → Digital Hub:** the store's webhooks call `/api/woo/webhook` (signed with a per-store secret); changes appear on every open screen.
+- **Safety net:** Vercel Cron calls `/api/cron/sync` daily (`vercel.json`). Vercel's free plan allows one run a day; on Pro, change the schedule to `*/15 * * * *`.
+- API keys live in the `store_secrets` table, which only the server (secret key) can read or write.
 
 Shopify, Amazon, eBay and TikTok Shop stores can be saved (for clients and groups) but don't sync yet.
 
@@ -27,22 +27,33 @@ Shopify, Amazon, eBay and TikTok Shop stores can be saved (for clients and group
 | Manager | `/manager` | Stores in their store group |
 | Client | `/client` | Stores of their client account, with its permissions |
 
-The owner (`src/config/owner.js`, and `isOwner()` in `firestore.rules`) becomes admin once that email is confirmed. Everyone else who signs up is a client with no stores until an admin assigns them in **Settings → Users & roles**. Enforced by `firestore.rules`.
+The owner (`src/config/owner.js`, and `owner_emails()` in the migration) becomes admin once that email is confirmed. Everyone else who signs up is a client with no stores until an admin assigns them in **Settings → Users & roles**.
 
-## One-time project setup (Firebase console, as devexpinsoft@gmail.com)
+## Environment variables
 
-1. **Build → Authentication → Get started → Sign-in method → Email/Password → Enable.**
-2. **Upgrade to the Blaze plan** (needed for Cloud Functions to call WooCommerce): https://console.firebase.google.com/project/digital-hub-4/usage/details
-3. Then: `npm run deploy` (or ask Claude to deploy).
+`.env.local` for local runs, and Vercel → Settings → Environment Variables for the live site (see `.env.production.example`):
 
-Then Claude (or you) creates the Firestore database in asia-southeast1 and deploys: `firebase firestore:databases:create "(default)" --location=asia-southeast1`, then `npm run deploy`.
+| Name | Where it's used |
+| ---- | --------------- |
+| `NEXT_PUBLIC_SUPABASE_URL` | Browser + server |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Browser + server (public; RLS protects the data) |
+| `SUPABASE_SECRET_KEY` | Server only. Bypasses RLS: never commit it, never prefix it with `NEXT_PUBLIC_` |
+| `CRON_SECRET` | Server only. Protects `/api/cron/sync` |
+
+## Database changes
+
+```
+npx supabase login                                   # once, opens the browser
+npx supabase link --project-ref tepkgonqyqcdjwlsmwft # once, asks for the database password
+npx supabase migration new <name>                    # write SQL in supabase/migrations
+npx supabase db push                                 # apply new migrations to the live project
+npx supabase config push                             # apply auth settings from supabase/config.toml
+```
 
 ## Commands
 
 ```
-npm install && (cd functions && npm install)
-npm run dev        # http://localhost:3000 against the real project (.env.local)
-npm run build      # static site in out/
-npm run deploy     # build + firebase deploy (hosting, functions, rules)
-npm run emulators  # local Firebase; copy .env.emulators.example → .env.development.local first
+npm install
+npm run dev        # http://localhost:3000 against the live Supabase project (.env.local)
+npm run build      # production build (Vercel runs this on every push to main)
 ```

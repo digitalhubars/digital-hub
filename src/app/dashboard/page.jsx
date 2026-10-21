@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { authMessage, ensureProfile, watchAuth } from '../../lib/auth';
-import { firebaseConfigured } from '../../lib/firebase/client';
+import { supabaseConfigured } from '../../lib/supabase/client';
 import { signOutAndLeave } from '../../lib/session';
 import { Loading } from '../../features/app/ClientApp';
 import AuthShell from '../../features/auth/AuthShell';
@@ -16,11 +16,11 @@ export default function DashboardRedirect() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!firebaseConfigured) return router.replace('/signin');
+    if (!supabaseConfigured) return router.replace('/signin');
     return watchAuth(async (user) => {
       if (!user) return router.replace('/signin');
       try {
-        const { role } = await ensureProfile(user.displayName || '');
+        const { role } = await ensureProfile();
         return router.replace(`/${role}`);
       } catch (err) {
         return setError(authMessage(err));

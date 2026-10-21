@@ -5,8 +5,8 @@ import { useApp } from '../../../context/AppContext';
 import { ui } from '../../../styles/ui';
 import CopyField from '../CopyField';
 
-const project = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || 'your-project';
-const webhookUrl = (storeId) => `https://asia-southeast1-${project}.cloudfunctions.net/wooWebhook?store=${storeId}`;
+// The app's own API route (src/app/api/woo/webhook).
+const webhookUrl = (storeId) => `${typeof window === 'undefined' ? '' : window.location.origin}/api/woo/webhook?store=${encodeURIComponent(storeId)}`;
 
 // WooCommerce webhooks are created automatically when a store first syncs.
 export default function ApiTab() {

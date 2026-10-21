@@ -1,6 +1,6 @@
 import { DASHBOARDS, NAV_ITEMS, SETTINGS_TABS } from '../../../../config/navigation';
 
-// Every dashboard URL is generated ahead of time for static hosting:
+// Every dashboard URL is generated ahead of time:
 // /admin, /admin/products, /admin/settings/users, /manager/orders, …
 export const dynamicParams = false;
 

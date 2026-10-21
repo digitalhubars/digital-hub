@@ -3,14 +3,14 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { TriangleAlert } from 'lucide-react';
+import { Mail, TriangleAlert } from 'lucide-react';
 import Button from '../../components/ui/Button';
 import Callout from '../../components/ui/Callout';
 import Field from '../../components/ui/Field';
 import PasswordStrength from '../../components/ui/PasswordStrength';
 import { isEmail } from '../../lib/format';
 import { authMessage, signUp, watchAuth } from '../../lib/auth';
-import { firebaseConfigured } from '../../lib/firebase/client';
+import { supabaseConfigured } from '../../lib/supabase/client';
 import SetupNotice from './SetupNotice';
 import { MIN_STRENGTH, passwordStrength } from '../../lib/password';
 import { ui } from '../../styles/ui';
@@ -21,9 +21,10 @@ export default function SignUpForm() {
   const [form, setForm] = useState({ name: '', email: '', password: '', confirm: '' });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [sentTo, setSentTo] = useState('');
   const bind = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
 
-  useEffect(() => (firebaseConfigured ? watchAuth((u) => u && !busy && router.replace('/dashboard')) : undefined), [router, busy]);
+  useEffect(() => (supabaseConfigured ? watchAuth((u) => u && !busy && router.replace('/dashboard')) : undefined), [router, busy]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -36,7 +37,11 @@ export default function SignUpForm() {
     // No role is chosen here: the server makes the very first account the admin,
     // and everyone after that a client with no stores.
     try {
-      await signUp({ email: form.email, password: form.password, fullName: form.name });
+      const { needsConfirmation } = await signUp({ email: form.email, password: form.password, fullName: form.name });
+      if (needsConfirmation) {
+        setBusy(false);
+        return setSentTo(form.email.trim());
+      }
     } catch (err) {
       setBusy(false);
       return setError(authMessage(err));
@@ -44,7 +49,24 @@ export default function SignUpForm() {
     return router.replace('/dashboard');
   };
 
-  if (!firebaseConfigured) {
+  if (sentTo) {
+    return (
+      <AuthShell
+        title="Check your email"
+        footer={
+          <Link href="/signin" className="font-medium text-teal-700 hover:underline dark:text-teal-300">
+            Back to sign in
+          </Link>
+        }
+      >
+        <Callout icon={Mail} tone="info">
+          We sent a confirmation link to {sentTo}. Open it to finish creating your account, then sign in. Check your spam folder too.
+        </Callout>
+      </AuthShell>
+    );
+  }
+
+  if (!supabaseConfigured) {
     return (
       <AuthShell title="Create an account">
         <SetupNotice />

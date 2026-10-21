@@ -38,7 +38,7 @@ export async function wooFetch(creds, path, { method = 'GET', body, query = {} }
     return { res, data, text };
   };
 
-  if (!/^https:\/\//i.test(creds.url) && !process.env.FUNCTIONS_EMULATOR) {
+  if (!/^https:\/\//i.test(creds.url) && process.env.NODE_ENV === 'production') {
     throw new WooError('The store address must start with https://', 400);
   }
 

@@ -174,7 +174,7 @@ function AddUserModal({ onClose, onSaved }) {
   );
 }
 
-// Firebase accounts (users collection). Admin-only tab; firestore.rules allow these changes only for admins.
+// Supabase sign-in accounts (profiles table). Admin-only tab; Row Level Security allows these changes only for admins.
 export default function UsersTab() {
   const { groups, clients, users: accounts, profile: me, log, showToast, askConfirm } = useApp();
   const [editing, setEditing] = useState(null);
@@ -195,7 +195,7 @@ export default function UsersTab() {
   const remove = (a) =>
     askConfirm({
       title: `Delete ${a.full_name || a.email}?`,
-      body: 'They lose access to every dashboard. If they sign in again they start over with no stores. Store data isn’t affected.',
+      body: 'Their sign-in account is deleted and they lose access to every dashboard. Store data isn’t affected.',
       onConfirm: async () => {
         try {
           await adminDeleteUser(a.id);
@@ -218,7 +218,7 @@ export default function UsersTab() {
     >
       <p className={`px-4 pt-4 text-sm sm:px-5 ${ui.muted}`}>
         People who sign up themselves start as clients with no stores. Give managers a store group and clients a client account so they can see their
-        dashboard. Sign-in is handled by Firebase; suspended accounts can’t sign in.
+        dashboard. Sign-in is handled by Supabase; suspended accounts can’t open any dashboard.
       </p>
       <DataTable
         rows={accounts}

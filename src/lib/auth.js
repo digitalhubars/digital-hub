@@ -1,123 +1,114 @@
-import {
-  createUserWithEmailAndPassword,
-  EmailAuthProvider,
-  onAuthStateChanged,
-  reauthenticateWithCredential,
-  sendEmailVerification,
-  sendPasswordResetEmail,
-  signInWithEmailAndPassword,
-  signOut as firebaseSignOut,
-  updatePassword,
-  updateProfile,
-  verifyBeforeUpdateEmail,
-} from 'firebase/auth';
-import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
-import { isOwnerEmail } from '../config/owner';
-import { fb } from './firebase/client';
+import { supabase } from './supabase/client';
 
-// Sign-in with Firebase Authentication (email + password).
-// Roles live in Firestore users/{uid}; firestore.rules decide who may set them.
+// Sign-in with Supabase Auth (email + password).
+// Profiles live in public.profiles. A database trigger creates one for every new account:
+// the owner (confirmed email, see src/config/owner.js) as admin, everyone else as a
+// client with no stores. Row Level Security decides who may change what.
 
 const FRIENDLY = {
-  'auth/invalid-credential': 'Email or password is wrong.',
-  'auth/wrong-password': 'Email or password is wrong.',
-  'auth/user-not-found': 'Email or password is wrong.',
-  'auth/invalid-email': 'Enter a valid email.',
-  'auth/email-already-in-use': 'An account with this email already exists. Sign in instead.',
-  'auth/weak-password': 'Pick a stronger password.',
-  'auth/user-disabled': 'This account is suspended. Ask your admin.',
-  'auth/too-many-requests': 'Too many tries. Wait a minute and try again.',
-  'auth/network-request-failed': 'Can’t reach the server. Check your connection.',
-  'auth/requires-recent-login': 'Sign out and in again, then retry.',
-  'permission-denied': 'You don’t have access to this. Ask your admin.',
-  unavailable: 'Can’t reach the database. Check your connection and try again.',
+  invalid_credentials: 'Email or password is wrong.',
+  email_not_confirmed: 'Confirm your email first. Open the link we sent you, then sign in.',
+  user_already_exists: 'An account with this email already exists. Sign in instead.',
+  email_exists: 'An account with this email already exists. Sign in instead.',
+  weak_password: 'Pick a stronger password.',
+  email_address_invalid: 'Enter a valid email.',
+  validation_failed: 'Enter a valid email.',
+  user_banned: 'This account is suspended. Ask your admin.',
+  over_request_rate_limit: 'Too many tries. Wait a minute and try again.',
+  over_email_send_rate_limit: 'Too many emails sent. Wait a few minutes and try again.',
+  same_password: 'Use a password you haven’t used here before.',
+  42501: 'You don’t have access to this. Ask your admin.',
 };
 
-export const authMessage = (err) => FRIENDLY[err?.code] || err?.message?.replace(/^Firebase: /, '') || 'Something went wrong.';
+export const authMessage = (err) => {
+  if (!err) return 'Something went wrong.';
+  if (FRIENDLY[err.code]) return FRIENDLY[err.code];
+  if (err.name === 'AuthRetryableFetchError' || /fetch/i.test(err.message || '')) return 'Can’t reach the server. Check your connection.';
+  return err.message || 'Something went wrong.';
+};
 
-export const watchAuth = (callback) => onAuthStateChanged(fb().auth, callback);
+// The parts of a Supabase user the app uses.
+const toUser = (u) =>
+  u ? { uid: u.id, email: u.email, displayName: u.user_metadata?.full_name || '', emailVerified: !!u.email_confirmed_at } : null;
 
-// Starting point for a brand-new workspace (written once the owner is admin).
-async function seedWorkspace() {
-  const { db } = fb();
-  await setDoc(doc(db, 'workspace', 'settings'), { workspaceName: 'Digital Hub', currency: 'USD', lowStockThreshold: 10 }, { merge: true });
-  await setDoc(doc(db, 'groups', 'g_main'), { name: 'Main' }, { merge: true });
+const origin = () => (typeof window === 'undefined' ? '' : window.location.origin);
+
+/** Calls back with the signed-in user (or null) now and on every change. Returns an unsubscribe function. */
+export function watchAuth(callback) {
+  const { data } = supabase().auth.onAuthStateChange((_event, session) => {
+    // Supabase recommends not awaiting other Supabase calls inside this callback.
+    setTimeout(() => callback(toUser(session?.user)), 0);
+  });
+  return () => data.subscription.unsubscribe();
 }
 
-/**
- * Creates users/{uid} on first sign-in: the owner (confirmed email) as admin, everyone
- * else as a client with no stores. Promotes the owner once their email is confirmed.
- * Safe to call on every load; firestore.rules enforce the same limits.
- */
-export async function ensureProfile(fullName = '') {
-  const { auth, db } = fb();
-  let user = auth.currentUser;
-  if (!user) throw new Error('Sign in first.');
-  if (!user.emailVerified) {
-    await user.reload();
-    user = auth.currentUser;
-    if (user.emailVerified) await user.getIdToken(true); // so the rules see the confirmed email
+/** The signed-in user's profile. The sign-up trigger creates it, so wait briefly if it's brand new. */
+export async function ensureProfile() {
+  const { data: auth } = await supabase().auth.getUser();
+  if (!auth.user) throw new Error('Sign in first.');
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const { data, error } = await supabase().from('profiles').select('*').eq('id', auth.user.id).maybeSingle();
+    if (error) throw error;
+    if (data) return data;
+    await new Promise((r) => setTimeout(r, 600));
   }
-  const owner = isOwnerEmail(user.email) && user.emailVerified;
-  const ref = doc(db, 'users', user.uid);
-  const snap = await getDoc(ref);
-
-  if (!snap.exists()) {
-    await setDoc(ref, {
-      email: user.email,
-      full_name: String(fullName || user.displayName || '').trim().slice(0, 120),
-      phone: '',
-      role: owner ? 'admin' : 'client',
-      group_id: null,
-      client_id: null,
-      status: 'active',
-      created_at: new Date().toISOString(),
-    });
-    if (owner) await seedWorkspace();
-    return { created: true, role: owner ? 'admin' : 'client' };
-  }
-
-  const current = snap.data();
-  if (user.email && current.email !== user.email) await updateDoc(ref, { email: user.email });
-  if (owner && current.role === 'client' && !current.client_id) {
-    await updateDoc(ref, { role: 'admin' });
-    await seedWorkspace();
-    return { created: false, role: 'admin' };
-  }
-  return { created: false, role: current.role };
+  throw new Error('Your account has no profile. Ask your admin to check Settings → Users & roles.');
 }
-
-export const resendVerification = () => sendEmailVerification(fb().auth.currentUser);
 
 export async function signIn(email, password) {
-  const cred = await signInWithEmailAndPassword(fb().auth, email.trim(), password);
-  await ensureProfile(cred.user.displayName || '');
-  return cred.user;
+  const { data, error } = await supabase().auth.signInWithPassword({ email: email.trim(), password });
+  if (error) throw error;
+  return toUser(data.user);
 }
 
+/** Returns { needsConfirmation } — true when Supabase emailed a confirmation link first. */
 export async function signUp({ email, password, fullName }) {
-  const cred = await createUserWithEmailAndPassword(fb().auth, email.trim(), password);
-  await updateProfile(cred.user, { displayName: fullName.trim() });
-  await sendEmailVerification(cred.user).catch(() => {});
-  return ensureProfile(fullName.trim());
+  const { data, error } = await supabase().auth.signUp({
+    email: email.trim(),
+    password,
+    options: { data: { full_name: fullName.trim() }, emailRedirectTo: `${origin()}/dashboard` },
+  });
+  if (error) throw error;
+  // Supabase hides "already registered" behind an empty identities list.
+  if (data.user && !data.user.identities?.length) throw Object.assign(new Error('exists'), { code: 'user_already_exists' });
+  return { needsConfirmation: !data.session };
 }
 
-export const signOut = () => firebaseSignOut(fb().auth);
+export const resendVerification = (email) =>
+  supabase().auth.resend({ type: 'signup', email, options: { emailRedirectTo: `${origin()}/dashboard` } });
 
-export const sendReset = (email) => sendPasswordResetEmail(fb().auth, email.trim());
+export async function signOut() {
+  await supabase().auth.signOut();
+}
 
+export async function sendReset(email) {
+  const { error } = await supabase().auth.resetPasswordForEmail(email.trim(), { redirectTo: `${origin()}/reset-password` });
+  if (error) throw error;
+}
+
+/** Sets a new password for the signed-in user (also used by the reset link page). */
+export async function setNewPassword(next) {
+  const { error } = await supabase().auth.updateUser({ password: next });
+  if (error) throw error;
+}
+
+/** Checks the current password before changing it. */
 export async function changePassword(current, next) {
-  const user = fb().auth.currentUser;
-  await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, current));
-  await updatePassword(user, next);
+  const { data } = await supabase().auth.getUser();
+  const email = data.user?.email;
+  const check = await supabase().auth.signInWithPassword({ email, password: current });
+  if (check.error) throw Object.assign(new Error('wrong'), { code: 'invalid_credentials' });
+  await setNewPassword(next);
 }
 
-// Name and phone live in Firestore; a new email is confirmed by a link Firebase sends.
+// Name and phone live in profiles; a new email is confirmed by a link Supabase sends.
 export async function updateOwnProfile(uid, { full_name, phone, email }) {
-  await updateDoc(doc(fb().db, 'users', uid), { full_name, phone });
-  const user = fb().auth.currentUser;
-  if (email && user && email.trim().toLowerCase() !== (user.email || '').toLowerCase()) {
-    await verifyBeforeUpdateEmail(user, email.trim());
+  const { error } = await supabase().from('profiles').update({ full_name, phone }).eq('id', uid);
+  if (error) throw error;
+  const { data } = await supabase().auth.getUser();
+  if (email && data.user && email.trim().toLowerCase() !== (data.user.email || '').toLowerCase()) {
+    const res = await supabase().auth.updateUser({ email: email.trim() }, { emailRedirectTo: `${origin()}/dashboard` });
+    if (res.error) throw res.error;
     return { emailPending: true };
   }
   return { emailPending: false };

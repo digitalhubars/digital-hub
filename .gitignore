@@ -3,10 +3,13 @@ node_modules
 out
 dist
 .DS_Store
+.vercel
+
+# Secrets: keys live only in .env.local and in Vercel's environment variables
+.env
 *.local
 .env*.local
-firebase-debug.log
-firestore-debug.log
-ui-debug.log
-.firebase
-.emulator-data
+
+# Supabase CLI local state
+supabase/.temp
+supabase/.branches

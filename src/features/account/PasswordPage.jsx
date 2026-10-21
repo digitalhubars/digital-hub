@@ -30,11 +30,11 @@ export default function PasswordPage() {
     setError('');
     setBusy(true);
     try {
-      // Firebase re-checks the current password before changing it.
+      // The current password is checked before it's changed.
       await changePassword(form.current, form.next);
     } catch (err) {
       setBusy(false);
-      return setError(err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' ? 'Your current password is wrong.' : authMessage(err));
+      return setError(err.code === 'invalid_credentials' ? 'Your current password is wrong.' : authMessage(err));
     }
     setBusy(false);
     log('Changed their password', 'settings');

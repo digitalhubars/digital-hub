@@ -2,18 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { doc, onSnapshot } from 'firebase/firestore';
 import { parseRoute } from '../../config/navigation';
 import { AppProvider } from '../../context/AppContext';
 import { authMessage, ensureProfile, watchAuth } from '../../lib/auth';
-import { fb, firebaseConfigured } from '../../lib/firebase/client';
+import { supabase, supabaseConfigured } from '../../lib/supabase/client';
 import AccountBlocked from '../auth/AccountBlocked';
 import AuthShell from '../auth/AuthShell';
 import SetupNotice from '../auth/SetupNotice';
 import AppShell from './AppShell';
 import { Loading } from './ClientApp';
 
-// Signed-in area: waits for Firebase Auth and the user's profile, then draws the app.
+// Signed-in area: waits for Supabase Auth and the user's profile, then draws the app.
 export default function AppRoot() {
   const pathname = usePathname();
   const router = useRouter();
@@ -21,24 +20,34 @@ export default function AppRoot() {
   const [profile, setProfile] = useState(undefined);
   const [error, setError] = useState('');
 
-  useEffect(() => (firebaseConfigured ? watchAuth((u) => setAuthUser(u)) : undefined), []);
+  useEffect(() => (supabaseConfigured ? watchAuth((u) => setAuthUser(u)) : undefined), []);
 
   // Live profile: role changes made by an admin apply right away.
+  const uid = authUser?.uid;
   useEffect(() => {
-    if (!authUser) {
+    if (!uid) {
       setProfile(authUser === null ? null : undefined);
       return undefined;
     }
-    // Creates the profile on first sign-in, and promotes the owner once their email is confirmed.
-    ensureProfile(authUser.displayName || '').catch((err) => setError(authMessage(err)));
-    return onSnapshot(
-      doc(fb().db, 'users', authUser.uid),
-      (snap) => {
-        if (snap.exists()) setProfile({ id: snap.id, ...snap.data() });
-      },
-      (err) => setError(authMessage(err)),
+    let active = true;
+    ensureProfile().then(
+      (p) => active && setProfile(p),
+      (err) => active && setError(authMessage(err)),
     );
-  }, [authUser]);
+    const channel = supabase()
+      .channel(`profile:${uid}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${uid}` }, (payload) => {
+        if (payload.eventType === 'DELETE') setError('Your account was removed. Ask your admin.');
+        else setProfile(payload.new);
+      })
+      .subscribe();
+    return () => {
+      active = false;
+      supabase().removeChannel(channel);
+    };
+    // Only re-run when a different person signs in.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid, authUser === null]);
 
   // Access gate: signed-out → sign-in page; managers and clients → their own dashboard only.
   const env = pathname.split('/').filter(Boolean)[0];
@@ -51,9 +60,9 @@ export default function AppRoot() {
   const route = useMemo(() => parseRoute(pathname, profile?.role || 'client'), [pathname, profile?.role]);
   const navigate = useCallback((path, { replace = false } = {}) => (replace ? router.replace(path) : router.push(path)), [router]);
 
-  if (!firebaseConfigured) {
+  if (!supabaseConfigured) {
     return (
-      <AuthShell title="Firebase isn’t connected yet">
+      <AuthShell title="Supabase isn’t connected yet">
         <SetupNotice />
       </AuthShell>
     );

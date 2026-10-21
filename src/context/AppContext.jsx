@@ -1,13 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { collection, doc, limit, orderBy, query, setDoc, where } from 'firebase/firestore';
 import { defaultSettings, isOAuthPlatform, PLATFORMS, sessions as initialSessions } from '../data';
 import { canVisitPage, routePath, settingsTabsFor } from '../config/navigation';
 import { getAccess } from '../config/roles';
-import { signOut as firebaseSignOut, updateOwnProfile, authMessage } from '../lib/auth';
-import { call, fb } from '../lib/firebase/client';
-import { useLiveDoc, useLiveList, waitForSync } from '../lib/firebase/live';
+import { signOut as authSignOut, updateOwnProfile, authMessage } from '../lib/auth';
+import { toRow } from '../lib/db/schema';
+import { callApi, supabase } from '../lib/supabase/client';
+import { useLiveList, useWorkspaceSettings } from '../lib/supabase/live';
 import { diffFields, formatMoney, uid } from '../lib/format';
-import { removeStoreData } from '../lib/removeStoreData';
 import { loadSampleData as seedSampleData, removeSampleData as clearSampleData } from '../lib/sampleData';
 import { restoreBackup, workspaceToFile } from '../lib/storage';
 import { STATUS } from '../styles/ui';
@@ -23,21 +22,16 @@ const withoutKey = (obj, key) => {
 
 const byNewest = (field) => (a, b) => (b[field] || 0) - (a[field] || 0);
 
-// Cloud Functions errors in plain words. "not-found"/"internal" usually mean the sync
-// functions aren't deployed yet (they need the Firebase Blaze plan).
-const callError = (err) =>
-  ['functions/not-found', 'functions/internal', 'functions/unavailable'].includes(err?.code)
-    ? 'Live WooCommerce sync isn’t switched on yet. The Firebase project needs the Blaze plan, then the sync functions can be deployed.'
-    : err?.message || 'Something went wrong.';
+const callError = (err) => err?.message || 'Something went wrong.';
 
 /**
- * profile:  the signed-in user's Firestore doc users/{uid} (role, group_id, client_id…)
+ * profile:  the signed-in user's row in public.profiles (role, group_id, client_id…)
  * route:    { env, page, tab } parsed from the URL; `env` is the dashboard being viewed
  * navigate: (path, { replace }) => void
  */
 export function AppProvider({ children, profile: initialProfile, route, navigate }) {
   // ---- Session -------------------------------------------------------------
-  // `realRole` comes from Firestore (set only by Cloud Functions).
+  // `realRole` comes from the profile (only admins can change it).
   // `role` is the dashboard on screen: always realRole, except admins can open any.
   const [profile, setProfile] = useState(initialProfile);
   useEffect(() => setProfile(initialProfile), [initialProfile]);
@@ -59,7 +53,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
   const showToast = useCallback((t) => setToast(t), []);
   const dismissToast = () => setToast(null);
   const reportWriteError = useCallback(
-    (err, name) => showToast({ tone: 'danger', title: 'Couldn’t save', body: `${name}: ${err.code === 'permission-denied' ? 'you don’t have access to change this.' : err.message}` }),
+    (err, name) => showToast({ tone: 'danger', title: 'Couldn’t save', body: `${name}: ${err.code === '42501' ? 'you don’t have access to change this.' : err.message}` }),
     [showToast],
   );
 
@@ -69,92 +63,60 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
     return () => clearTimeout(timer);
   }, [toast]);
 
-  // ---- Live data from Firestore ---------------------------------------------
-  // Admins load everything. Managers load their group's stores, clients their client's
-  // stores; firestore.rules enforce the same limits on the server.
-  const { db } = fb();
-  const myGroup = profile.group_id;
-  const myClient = profile.client_id;
+  // ---- Live data from Supabase ------------------------------------------------
+  // Everyone loads "everything"; Row Level Security returns only what each person may
+  // see (admins: all; managers: their group's stores; clients: their client's stores).
   const live = { onError: reportWriteError };
 
-  const [groups, setGroups, groupsLoading] = useLiveList('groups', [{ key: 'all', ref: collection(db, 'groups') }], { ...live, merge: true });
-  const [clients, setClients] = useLiveList(
-    'clients',
-    isAdmin ? [{ key: 'all', ref: collection(db, 'clients') }] : realRole === 'client' && myClient ? [{ key: myClient, ref: doc(db, 'clients', myClient) }] : [],
-    live,
-  );
-
-  const visibleStoreIds = useMemo(() => {
-    if (isAdmin) return null; // everything
-    if (realRole === 'manager') return groups.find((g) => g.id === myGroup)?.storeIds || [];
-    return clients.find((c) => c.id === myClient)?.storeIds || [];
-  }, [isAdmin, realRole, groups, clients, myGroup, myClient]);
-
-  const perStore = (name) =>
-    isAdmin
-      ? [{ key: 'all', ref: collection(db, name) }]
-      : (visibleStoreIds || []).map((id) => ({ key: id, ref: query(collection(db, name), where('storeId', '==', id)) }));
-
-  const storeSources = isAdmin
-    ? [{ key: 'all', ref: collection(db, 'stores') }]
-    : realRole === 'manager' && myGroup
-      ? [{ key: `g:${myGroup}`, ref: query(collection(db, 'stores'), where('groupId', '==', myGroup)) }]
-      : (visibleStoreIds || []).map((id) => ({ key: id, ref: doc(db, 'stores', id) }));
-
-  const [stores, setStores] = useLiveList('stores', storeSources, live);
-  const [products, setProducts] = useLiveList('products', perStore('products'), {
+  const [groupRows, setGroups, groupsLoading] = useLiveList('groups', live);
+  const [clients, setClients] = useLiveList('clients', { ...live, enabled: isAdmin || (realRole === 'client' && !!profile.client_id) });
+  const [stores, setStores] = useLiveList('stores', live);
+  const [products, setProducts] = useLiveList('products', {
     ...live,
     sort: (a, b) => (a.title || '').localeCompare(b.title || ''),
-    // Deleting a product asks the sync function to delete it in the store first.
+    // Deleting a product asks the server to delete it in the store first.
     softDelete: () => ({ pendingDelete: true, syncState: 'pending', updatedBy: profile.id, editedAt: Date.now() }),
   });
-  const [orders, setOrders] = useLiveList('orders', perStore('orders'), { ...live, sort: byNewest('placedAt') });
-  const [customerRecords] = useLiveList('customers', perStore('customers'), live);
-  const [users] = useLiveList('users', isAdmin ? [{ key: 'all', ref: collection(db, 'users') }] : [], live);
-  const [activity, setActivity] = useLiveList(
-    'activity',
-    isAdmin ? [{ key: 'recent', ref: query(collection(db, 'activity'), orderBy('at', 'desc'), limit(300)) }] : [],
-    { ...live, sort: byNewest('at') },
-  );
-  const [notifications, setNotifications] = useLiveList(
-    'notifications',
-    isAdmin ? [{ key: 'recent', ref: query(collection(db, 'notifications'), orderBy('at', 'desc'), limit(50)) }] : [],
-    { ...live, sort: byNewest('at') },
-  );
-  const [settingsDoc, updateSettingsDoc] = useLiveDoc('workspace/settings', live);
+  const [orders, setOrders] = useLiveList('orders', { ...live, sort: byNewest('placedAt') });
+  const [customerRecords] = useLiveList('customers', live);
+  const [users] = useLiveList('profiles', { ...live, enabled: isAdmin });
+  const [activity, setActivity] = useLiveList('activity', {
+    ...live,
+    enabled: isAdmin,
+    order: { column: 'at', ascending: false },
+    limit: 300,
+    sort: byNewest('at'),
+  });
+  const [notifications, setNotifications] = useLiveList('notifications', {
+    ...live,
+    enabled: isAdmin,
+    order: { column: 'at', ascending: false },
+    limit: 50,
+    sort: byNewest('at'),
+  });
+  const [settingsDoc, updateSettingsDoc] = useWorkspaceSettings(live);
   const settings = useMemo(() => ({ ...defaultSettings, ...(settingsDoc || {}) }), [settingsDoc]);
   const [sessions, setSessions] = useState(initialSessions);
 
-  // Each group lists its stores (the security rules use this to scope managers).
-  // The admin's browser keeps it in step with the stores' groupId.
+  // Each group's stores, worked out from the stores' groupId.
+  const groups = useMemo(
+    () => groupRows.map((g) => ({ ...g, storeIds: stores.filter((s) => s.groupId === g.id).map((s) => s.id) })),
+    [groupRows, stores],
+  );
+
   // A workspace always has at least one group, and every store belongs to one.
   useEffect(() => {
     if (!isAdmin || groupsLoading) return;
-    if (!groups.length) {
-      setDoc(doc(db, 'groups', 'g_main'), { name: 'Main', storeIds: [] }, { merge: true }).catch(() => {});
+    if (!groupRows.length) {
+      setGroups([{ id: 'g_main', name: 'Main' }]).catch(() => {});
       return;
     }
-    if (stores.some((s) => !s.groupId || !groups.some((g) => g.id === s.groupId))) {
-      const fallback = groups[0].id;
-      setStores((list) => list.map((s) => (!s.groupId || !groups.some((g) => g.id === s.groupId) ? { ...s, groupId: fallback } : s))).catch(() => {});
+    if (stores.some((s) => !s.groupId || !groupRows.some((g) => g.id === s.groupId))) {
+      const fallback = groupRows[0].id;
+      setStores((list) => list.map((s) => (!s.groupId || !groupRows.some((g) => g.id === s.groupId) ? { ...s, groupId: fallback } : s))).catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin, groupsLoading, groups, stores]);
-
-  const groupSyncRef = useRef('');
-  useEffect(() => {
-    if (!isAdmin || !groups.length) return;
-    const signature = groups.map((g) => `${g.id}:${stores.filter((s) => s.groupId === g.id).map((s) => s.id).sort().join(',')}`).join('|');
-    const drift = groups.some((g) => {
-      const expected = stores.filter((s) => s.groupId === g.id).map((s) => s.id).sort().join(',');
-      return expected !== [...(g.storeIds || [])].sort().join(',');
-    });
-    if (drift && groupSyncRef.current !== signature) {
-      groupSyncRef.current = signature; // one attempt per change, so a failed write can't loop
-      setGroups((list) => list.map((g) => ({ ...g, storeIds: stores.filter((s) => s.groupId === g.id).map((s) => s.id) }))).catch(() => {});
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin, stores, groups]);
+  }, [isAdmin, groupsLoading, groupRows, stores]);
 
   // People, shaped like the old team list (used for previews and pickers).
   const team = useMemo(
@@ -217,7 +179,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
       ? null
       : isPreview
         ? clients.find((c) => c.id === previewClientId) || null
-        : clients.find((c) => c.id === myClient) || null;
+        : clients.find((c) => c.id === profile.client_id) || null;
 
   const currentUser = useMemo(() => {
     const me = {
@@ -302,7 +264,10 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
     setActivity((list) => [{ id: uid('a'), at: Date.now(), actor: currentUser.name, actorId: profile.id, type, text }, ...list]).catch(() => {});
 
   const notify = (text, tone = 'success') =>
-    setDoc(doc(db, 'notifications', uid('n')), { at: Date.now(), text, tone, read: false }).catch(() => {});
+    supabase()
+      .from('notifications')
+      .insert(toRow('notifications', { id: uid('n'), at: Date.now(), text, tone, read: false }))
+      .then(() => {}, () => {});
 
   const markAllRead = () => setNotifications((list) => list.map((n) => ({ ...n, read: true }))).catch(() => {});
 
@@ -314,16 +279,24 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
   const stamp = () => ({ syncState: 'pending', syncError: null, updatedBy: profile.id, editedAt: Date.now() });
 
   // Tells the user how the store answered.
-  const reportSync = async (collectionName, id, { title, success, store }) => {
-    if (store?.sample) return showToast({ title: success, body: `${store.name} is a sample store, so nothing was sent.` });
-    if (store?.status === 'paused') return showToast({ title: 'Saved. Waiting to sync', body: `${store.name} is paused. The change goes out when it resumes.` });
-    if (store && store.platform !== 'WooCommerce') {
+  // Sends a pending product/order to its store (server route) and returns { state, error }.
+  // `before` holds the fields the store update needs to compare against.
+  const pushToStore = (table, id, before) =>
+    callApi('sync/push', { table, id, before }).catch((err) => ({ state: 'error', error: callError(err) }));
+
+  const reportSync = async (collectionName, id, { title, success, store, before }) => {
+    // Sample, paused and not-yet-supported stores answer at once: the server marks the
+    // row synced (samples), leaves it pending (paused) or records why it can't sync.
+    if (store?.sample || store?.status === 'paused' || (store && store.platform !== 'WooCommerce')) {
+      pushToStore(collectionName, id, before);
+      if (store.sample) return showToast({ title: success, body: `${store.name} is a sample store, so nothing was sent.` });
+      if (store.status === 'paused') return showToast({ title: 'Saved. Waiting to sync', body: `${store.name} is paused. The change goes out when it resumes.` });
       return showToast({ title: 'Saved in Digital Hub', body: `Live sync for ${store.platform} isn’t available yet, so ${store.name} wasn’t changed.` });
     }
     showToast({ pending: true, title, body: store?.name });
-    const result = await waitForSync(collectionName, id);
+    const result = await pushToStore(collectionName, id, before);
     if (result.state === 'synced' || result.state === 'gone') return showToast({ title: success, body: store?.name });
-    if (result.state === 'timeout') return showToast({ title: 'Still sending…', body: 'The store is slow to answer. The row updates when it does.' });
+    if (result.state === 'pending') return showToast({ title: 'Saved. Waiting to sync', body: result.error || 'The change goes out on the next sync.' });
     return showToast({ tone: 'danger', title: 'The store didn’t accept the change', body: result.error });
   };
 
@@ -349,6 +322,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
       title: `Sending to ${store.platform}…`,
       success: `${record.title} ${isNew ? 'created' : 'updated'} in ${store.platform}`,
       store,
+      before: previous ? { stock: previous.stock, category: previous.category } : null,
     });
   };
 
@@ -385,7 +359,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
     setSyncingStores((s) => ({ ...s, [store.id]: true }));
     if (!quiet) showToast({ pending: true, title: `Syncing ${store.name}…`, body: 'Importing products, orders and customers.' });
     try {
-      const result = await call('syncStore', { storeId: store.id });
+      const result = await callApi('stores/sync', { storeId: store.id });
       if (result.ok) {
         const c = result.counts;
         showToast({
@@ -409,7 +383,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
       return { ok: false, message: `Live connection for ${form.platform} isn’t available yet. Only WooCommerce connects for now.` };
     }
     try {
-      return await call('testWooConnection', {
+      return await callApi('stores/test', {
         storeId: form.storeId,
         url: form.url,
         consumerKey: form.consumerKey || undefined,
@@ -442,7 +416,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
 
   /**
    * store: the store fields; credentials: { consumerKey, consumerSecret } when new keys were typed.
-   * Keys go to storeSecrets/{id}, which the browser can write but never read back.
+   * Keys go to the server (store_secrets table), which no browser can read.
    */
   const saveStore = async (store, isNew, clientId, credentials) => {
     const { credentialsChanged: _c, ...data } = store;
@@ -462,7 +436,11 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
     try {
       await setStores((list) => (isNew ? [...list, record] : list.map((s) => (s.id === id ? record : s))));
       if (isWoo && (credentials || urlChanged || isNew)) {
-        await setDoc(doc(db, 'storeSecrets', id), { url: record.url, ...(credentials || {}), updatedAt: Date.now() }, { merge: true });
+        // Keys go to the server, which stores them where no browser can read them back.
+        await callApi('stores/secrets', { storeId: id, url: record.url, ...(credentials || {}) }).catch((err) => {
+          showToast({ tone: 'danger', title: 'Couldn’t save the API keys', body: callError(err) });
+          throw err;
+        });
       }
       if (clientId) await setClients((list) => list.map((c) => (c.id === clientId ? { ...c, storeIds: [...(c.storeIds || []), id] } : c)));
     } catch {
@@ -492,12 +470,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
   const deleteStore = async (store) => {
     showToast({ pending: true, title: `Disconnecting ${store.name}…` });
     try {
-      try {
-        await call('disconnectStore', { storeId: store.id });
-      } catch (err) {
-        if (!['functions/not-found', 'functions/internal', 'functions/unavailable'].includes(err?.code)) throw err;
-        await removeStoreData(store.id); // sync functions not deployed: remove Digital Hub's copy directly
-      }
+      await callApi('stores/disconnect', { storeId: store.id });
       log(`Deleted integration ${store.name}`, 'integration');
       showToast({ title: `${store.name} disconnected` });
     } catch (err) {
@@ -555,8 +528,8 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
   // ---- Groups, settings, profile ---------------------------------------------
   const saveGroup = (group, storeIdsInGroup, isNew) => {
     const id = isNew ? uid('g') : group.id;
-    setGroups((list) => (isNew ? [...list, { ...group, id, storeIds: [] }] : list.map((g) => (g.id === id ? { ...g, ...group } : g)))).catch(() => {});
-    // The server keeps each group's storeIds in step with the stores' groupId.
+    setGroups((list) => (isNew ? [...list, { ...group, id }] : list.map((g) => (g.id === id ? { ...g, ...group } : g)))).catch(() => {});
+    // A group's stores are the stores whose groupId points at it.
     setStores((list) => list.map((s) => (storeIdsInGroup.includes(s.id) ? { ...s, groupId: id } : s))).catch(() => {});
     log(`${isNew ? 'Created' : 'Updated'} store group ${group.name}`, 'settings');
     showToast({ title: `Group “${group.name}” saved` });
@@ -643,7 +616,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
   };
 
   const signOut = async () => {
-    await firebaseSignOut();
+    await authSignOut();
     window.location.assign('/signin?message=signed-out');
   };
 

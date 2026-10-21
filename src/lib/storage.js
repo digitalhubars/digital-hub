@@ -1,10 +1,10 @@
-import { doc, writeBatch } from 'firebase/firestore';
-import { fb } from './firebase/client';
+import { must, supabase } from './supabase/client';
+import { upsertRecords } from './db/write';
 
-// Backup file for the workspace data. The live data is in Firestore; this file can be
+// Backup file for the workspace data. The live data is in Supabase; this file can be
 // downloaded and later restored from Settings → Data management.
 
-const VERSION = 2;
+const VERSION = 3;
 
 export function workspaceToFile(data) {
   return new Blob([JSON.stringify({ version: VERSION, exportedAt: new Date().toISOString(), data }, null, 2)], {
@@ -12,9 +12,9 @@ export function workspaceToFile(data) {
   });
 }
 
-// Collections a backup restores. Activity and notifications are left out: the rules only
-// let people create activity entries as themselves.
-const RESTORED = ['stores', 'groups', 'products', 'orders', 'customers', 'clients'];
+// Tables a backup restores, parents first. Activity and notifications are left out: the
+// policies only let people add activity entries as themselves.
+const RESTORED = ['groups', 'stores', 'customers', 'products', 'orders', 'clients'];
 
 export async function readBackupFile(file) {
   let parsed;
@@ -31,30 +31,21 @@ export async function readBackupFile(file) {
   return { exportedAt: parsed.exportedAt || null, data, counts };
 }
 
-const toDoc = ({ id: _id, ...rest }) => JSON.parse(JSON.stringify(rest));
-
-// Writes every record in the backup (existing docs with the same id are replaced).
+// Writes every record in the backup (rows with the same id are replaced).
 // Products and orders are marked synced so restoring never pushes changes to a store.
 export async function restoreBackup(data) {
-  const { db } = fb();
-  const ops = [];
-  RESTORED.forEach((name) =>
-    (Array.isArray(data[name]) ? data[name] : []).forEach((item) => {
-      if (!item?.id) return;
-      let record = toDoc(item);
-      if (name === 'products' || name === 'orders') {
-        const { pendingDelete: _p, syncError: _e, ...rest } = record;
-        record = { ...rest, syncState: 'synced' };
-      }
-      ops.push([doc(db, name, String(item.id)), record]);
-    }),
-  );
-  if (data.settings && typeof data.settings === 'object') ops.push([doc(db, 'workspace', 'settings'), toDoc(data.settings)]);
-
-  for (let i = 0; i < ops.length; i += 450) {
-    const batch = writeBatch(db);
-    ops.slice(i, i + 450).forEach(([ref, record]) => batch.set(ref, record));
-    await batch.commit();
+  let count = 0;
+  for (const name of RESTORED) {
+    let records = (Array.isArray(data[name]) ? data[name] : []).filter((r) => r?.id).map((r) => ({ ...r, id: String(r.id) }));
+    if (name === 'products' || name === 'orders') {
+      records = records.map(({ pendingDelete: _p, syncError: _e, ...rest }) => ({ ...rest, syncState: 'synced', ...(name === 'products' ? { pendingDelete: false } : {}) }));
+    }
+    await upsertRecords(name, records);
+    count += records.length;
   }
-  return ops.length;
+  if (data.settings && typeof data.settings === 'object') {
+    must(await supabase().from('workspace_settings').upsert({ id: 1, data: JSON.parse(JSON.stringify(data.settings)) }));
+    count += 1;
+  }
+  return count;
 }

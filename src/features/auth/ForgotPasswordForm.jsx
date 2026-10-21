@@ -25,7 +25,7 @@ export default function ForgotPasswordForm() {
       await sendReset(email);
     } catch (err) {
       // Don't reveal whether an account exists; only show real problems.
-      if (err.code !== 'auth/user-not-found') {
+      if (err.code !== 'user_not_found') {
         setBusy(false);
         return setError(authMessage(err));
       }

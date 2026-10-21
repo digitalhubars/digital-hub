@@ -1,36 +1,22 @@
-import { doc, writeBatch } from 'firebase/firestore';
 import { clients, customers, groups, orders, products, stores } from '../data';
-import { fb } from './firebase/client';
+import { deleteIds, upsertRecords } from './db/write';
 
 // The demo stores (marked `sample: true`) so the dashboards have something to show.
-// The sync functions never contact a real store for them.
+// The sync never contacts a real store for them.
 
-const toDoc = ({ id: _id, ...rest }) => JSON.parse(JSON.stringify(rest));
-
-function sampleDocs() {
-  const docs = [];
-  stores.forEach((s) => docs.push(['stores', s.id, { ...s, sample: true }]));
-  groups.forEach((g) => docs.push(['groups', g.id, { ...g, sample: true, storeIds: stores.filter((s) => s.groupId === g.id).map((s) => s.id) }]));
-  products.forEach((p) => docs.push(['products', p.id, { ...p, syncState: 'synced' }]));
-  orders.forEach((o) => docs.push(['orders', o.id, { ...o, syncState: 'synced' }]));
-  customers.forEach((c) => docs.push(['customers', c.id, c]));
-  clients.forEach((c) => docs.push(['clients', c.id, { ...c, sample: true }]));
-  return docs;
+export async function loadSampleData() {
+  // Parents first: stores need their group, products/orders/customers their store.
+  await upsertRecords('groups', groups.map((g) => ({ ...g, sample: true })));
+  await upsertRecords('stores', stores.map((s) => ({ ...s, sample: true })));
+  await upsertRecords('customers', customers);
+  await upsertRecords('products', products.map((p) => ({ ...p, syncState: 'synced' })));
+  await upsertRecords('orders', orders.map((o) => ({ ...o, syncState: 'synced' })));
+  await upsertRecords('clients', clients.map((c) => ({ ...c, sample: true })));
 }
 
-async function commit(ops) {
-  const { db } = fb();
-  for (let i = 0; i < ops.length; i += 450) {
-    const batch = writeBatch(db);
-    ops.slice(i, i + 450).forEach(([collection, id, data]) => {
-      const ref = doc(db, collection, id);
-      if (data) batch.set(ref, toDoc(data));
-      else batch.delete(ref);
-    });
-    await batch.commit();
-  }
+export async function removeSampleData() {
+  // Deleting a store also deletes its products, orders and customers (on delete cascade).
+  await deleteIds('clients', clients.map((c) => c.id));
+  await deleteIds('stores', stores.map((s) => s.id));
+  await deleteIds('groups', groups.map((g) => g.id));
 }
-
-export const loadSampleData = () => commit(sampleDocs());
-
-export const removeSampleData = () => commit(sampleDocs().map(([collection, id]) => [collection, id, null]));

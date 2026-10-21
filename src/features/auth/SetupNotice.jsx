@@ -4,15 +4,16 @@ import { ui } from '../../styles/ui';
 
 const Code = ({ children }) => <span className="font-mono text-xs">{children}</span>;
 
-// Shown until .env.local / .env.production has the Firebase web config.
+// Shown until the Supabase URL and publishable key are set (.env.local, or the Vercel project's environment variables).
 export default function SetupNotice() {
   return (
     <div className="space-y-3 text-sm">
       <Callout icon={TriangleAlert} tone="warning">
-        The Firebase project settings are missing.
+        The Supabase project settings are missing.
       </Callout>
       <p className={ui.body}>
-        Add the web app config to <Code>.env.local</Code> (see <Code>README.md</Code>, “Set up Firebase”), then restart the server.
+        Set <Code>NEXT_PUBLIC_SUPABASE_URL</Code> and <Code>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY</Code> in <Code>.env.local</Code> (or in Vercel →
+        Settings → Environment Variables), then restart or redeploy.
       </p>
     </div>
   );

@@ -1,9 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // Static site for Firebase Hosting; data and WooCommerce calls go through Firebase.
-  // Only for builds: `next dev` in Next 14 rejects export mode on optional catch-all routes.
-  output: process.env.NODE_ENV === 'production' ? 'export' : undefined,
+  // Runs on Vercel as a full Next.js app: pages plus the API routes in src/app/api
+  // (WooCommerce sync, webhooks, admin user management).
   images: { unoptimized: true },
 };
 
