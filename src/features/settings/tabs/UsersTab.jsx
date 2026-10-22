@@ -10,67 +10,191 @@ import Field from '../../../components/ui/Field';
 import Modal from '../../../components/ui/Modal';
 import PasswordStrength from '../../../components/ui/PasswordStrength';
 import Select from '../../../components/ui/Select';
+import Toggle from '../../../components/ui/Toggle';
 import { ROLE_LABELS } from '../../../config/roles';
 import { useApp } from '../../../context/AppContext';
+import { DEFAULT_CLIENT_PERMISSIONS } from '../../../data/clients';
 import { formatDate, initials, isEmail } from '../../../lib/format';
 import { authMessage } from '../../../lib/auth';
 import { adminCreateUser, adminDeleteUser, adminSendPasswordReset, adminUpdateUser } from '../../../lib/users';
 import { MIN_STRENGTH, passwordStrength } from '../../../lib/password';
 import { ui } from '../../../styles/ui';
+import { CLIENT_PERMISSIONS } from '../../clients/ClientModal';
+import StorePicker from '../../clients/StorePicker';
 
 const ROLE_HINTS = {
   admin: 'Every store, every setting, and can switch to any dashboard.',
   manager: 'Only the stores in one store group.',
-  client: 'Only the stores of one client account.',
+  client: 'Only the stores of one client account, with its permissions.',
 };
 
-// Role + what it links to. Shared by the add and edit forms.
+const NEW = '__new';
+
+// Starting values for the access fields: the login's current group/client, or a new one.
+function initialAccess({ role = 'client', group_id, client_id, full_name, email }, { groups, clients, stores }) {
+  const groupId = group_id || groups[0]?.id || NEW;
+  const client = clients.find((c) => c.id === client_id) || (client_id ? null : clients[0]) || null;
+  return {
+    role,
+    group_id: groupId,
+    group_name: '',
+    group_stores: stores.filter((s) => s.groupId === groupId).map((s) => s.id),
+    client_id: client ? client.id : NEW,
+    client_company: client ? '' : full_name || (email ? email.split('@')[1] || '' : ''),
+    client_stores: client ? client.storeIds || [] : [],
+    client_permissions: { ...DEFAULT_CLIENT_PERMISSIONS, ...(client?.permissions || {}) },
+  };
+}
+
+// Role, plus the stores (and for clients, the permissions) that role can see. Shared by the add and edit forms.
 function AccessFields({ form, setForm }) {
-  const { groups, clients } = useApp();
+  const { groups, clients, stores } = useApp();
+  const set = (patch) => setForm((f) => ({ ...f, ...patch }));
+  const groupName = (id) => groups.find((g) => g.id === id)?.name;
+  const pickGroup = (id) => set({ group_id: id, group_stores: stores.filter((s) => s.groupId === id).map((s) => s.id) });
+  const pickClient = (id) => {
+    const c = clients.find((x) => x.id === id);
+    set({
+      client_id: id,
+      client_stores: c ? c.storeIds || [] : [],
+      client_permissions: { ...DEFAULT_CLIENT_PERMISSIONS, ...(c?.permissions || {}) },
+    });
+  };
+  const otherGroups = groups.filter((g) => g.id !== form.group_id);
+
   return (
     <>
       <Field label="Role" hint={ROLE_HINTS[form.role]}>
         <Select
           value={form.role}
-          onChange={(v) => setForm((f) => ({ ...f, role: v }))}
+          onChange={(v) => set({ role: v })}
           options={['admin', 'manager', 'client'].map((r) => ({ value: r, label: ROLE_LABELS[r] }))}
         />
       </Field>
+
       {form.role === 'manager' && (
-        <Field label="Store group" hint="Manage which stores are in each group under Store groups.">
-          <Select value={form.group_id} onChange={(v) => setForm((f) => ({ ...f, group_id: v }))} options={groups.map((g) => ({ value: g.id, label: g.name }))} />
-        </Field>
+        <>
+          <Field label="Store group" hint="A manager sees every store in their group. Several managers can share a group.">
+            <Select
+              value={form.group_id}
+              onChange={pickGroup}
+              options={[...groups.map((g) => ({ value: g.id, label: g.name })), { value: NEW, label: '+ New store group…' }]}
+            />
+          </Field>
+          {form.group_id === NEW && (
+            <Field label="New group name">
+              <input className={ui.input} value={form.group_name} placeholder="e.g. East coast stores" onChange={(e) => set({ group_name: e.target.value })} />
+            </Field>
+          )}
+          <Field
+            label="Stores in this group"
+            hint={
+              otherGroups.length
+                ? 'A store is in one group at a time: ticking it moves it here, unticking moves it back to another group.'
+                : 'A store is in one group at a time. Add another group under Store groups to take stores out of this one.'
+            }
+          >
+            {stores.length ? (
+              <StorePicker
+                stores={stores}
+                picked={form.group_stores}
+                onChange={(ids) => set({ group_stores: ids })}
+                othersOf={(storeId) => {
+                  const s = stores.find((x) => x.id === storeId);
+                  return s && s.groupId && s.groupId !== form.group_id ? [{ company: `group ${groupName(s.groupId)}` }] : [];
+                }}
+              />
+            ) : (
+              <Callout>No stores yet. Connect one under Integrations first.</Callout>
+            )}
+          </Field>
+        </>
       )}
+
       {form.role === 'client' && (
-        <Field label="Client account" hint="They see only this client’s stores, with its permissions.">
-          <Select value={form.client_id} onChange={(v) => setForm((f) => ({ ...f, client_id: v }))} options={clients.map((c) => ({ value: c.id, label: c.company }))} />
-        </Field>
+        <>
+          <Field label="Client account" hint="Several logins can share one client account.">
+            <Select
+              value={form.client_id}
+              onChange={pickClient}
+              options={[...clients.map((c) => ({ value: c.id, label: c.company })), { value: NEW, label: '+ New client account…' }]}
+            />
+          </Field>
+          {form.client_id === NEW && (
+            <Field label="Company name">
+              <input className={ui.input} value={form.client_company} placeholder="e.g. Blue Tag Peptides" onChange={(e) => set({ client_company: e.target.value })} />
+            </Field>
+          )}
+          <Field label="Stores they can see">
+            {stores.length ? (
+              <StorePicker stores={stores} picked={form.client_stores} onChange={(ids) => set({ client_stores: ids })} />
+            ) : (
+              <Callout>No stores yet. Connect one under Integrations first.</Callout>
+            )}
+          </Field>
+          <Field label="Permissions">
+            <div className={ui.divide}>
+              {Object.entries(CLIENT_PERMISSIONS).map(([key, [label, hint]]) => (
+                <Toggle
+                  key={key}
+                  label={label}
+                  hint={hint}
+                  checked={!!form.client_permissions[key]}
+                  onChange={(on) => set({ client_permissions: { ...form.client_permissions, [key]: on } })}
+                />
+              ))}
+            </div>
+          </Field>
+        </>
       )}
     </>
   );
 }
 
-const accessPatch = (form) => ({
-  role: form.role,
-  group_id: form.role === 'manager' ? form.group_id : null,
-  client_id: form.role === 'client' ? form.client_id : null,
-});
+const accessError = (form) => {
+  if (form.role === 'manager' && form.group_id === NEW && !form.group_name.trim()) return 'Name the new store group.';
+  if (form.role === 'client' && form.client_id === NEW && !form.client_company.trim()) return 'Enter the client’s company name.';
+  if (form.role === 'client' && !form.client_stores.length) return 'Pick at least one store the client can see.';
+  return '';
+};
+
+/** Saves the group / client account the form describes and returns the profile fields. */
+function useResolveAccess() {
+  const { saveClientAccess, saveManagerGroup } = useApp();
+  return async (form, person) => {
+    if (form.role === 'manager') {
+      const groupId = await saveManagerGroup({ id: form.group_id === NEW ? '' : form.group_id, name: form.group_name, storeIds: form.group_stores });
+      return { role: 'manager', group_id: groupId, client_id: null };
+    }
+    if (form.role === 'client') {
+      const client = await saveClientAccess({
+        id: form.client_id === NEW ? '' : form.client_id,
+        company: form.client_company,
+        storeIds: form.client_stores,
+        permissions: form.client_permissions,
+        contact: person.full_name || '',
+        email: person.email || '',
+      });
+      return { role: 'client', group_id: null, client_id: client.id };
+    }
+    return { role: 'admin', group_id: null, client_id: null };
+  };
+}
 
 function EditUserModal({ account, onClose, onSaved }) {
-  const { groups, clients, users, profile: me } = useApp();
-  const [form, setForm] = useState({
-    role: account.role,
-    group_id: account.group_id || groups[0]?.id || '',
-    client_id: account.client_id || clients[0]?.id || '',
-    status: account.status,
-  });
+  const app = useApp();
+  const { users, profile: me } = app;
+  const resolveAccess = useResolveAccess();
+  const [form, setForm] = useState(() => ({ ...initialAccess(account, app), status: account.status }));
   const [error, setError] = useState('');
 
   const [busy, setBusy] = useState(false);
   const save = async () => {
+    const problem = accessError(form);
+    if (problem) return setError(problem);
     setBusy(true);
     try {
-      const patch = accessPatch(form);
+      const patch = await resolveAccess(form, account);
       const updated = await adminUpdateUser(account, { role: patch.role, groupId: patch.group_id, clientId: patch.client_id, status: form.status }, users);
       onSaved(updated);
       return onClose();
@@ -85,6 +209,7 @@ function EditUserModal({ account, onClose, onSaved }) {
       title={`Edit ${account.full_name || account.email}`}
       subtitle={<p className={`text-sm ${ui.muted}`}>{account.email}</p>}
       onClose={onClose}
+      size="lg"
       footer={
         <>
           <Button onClick={onClose}>Cancel</Button>
@@ -116,9 +241,11 @@ function EditUserModal({ account, onClose, onSaved }) {
 }
 
 function AddUserModal({ onClose, onSaved }) {
-  const { groups, clients } = useApp();
-  const [form, setForm] = useState({ name: '', email: '', password: '', role: 'client', group_id: groups[0]?.id || '', client_id: clients[0]?.id || '' });
+  const app = useApp();
+  const resolveAccess = useResolveAccess();
+  const [form, setForm] = useState(() => ({ name: '', email: '', password: '', ...initialAccess({ role: 'client' }, app) }));
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
   const bind = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
 
   const save = async (e) => {
@@ -126,8 +253,13 @@ function AddUserModal({ onClose, onSaved }) {
     if (!form.name.trim()) return setError('Enter a name.');
     if (!isEmail(form.email)) return setError('Enter a valid email.');
     if (passwordStrength(form.password) < MIN_STRENGTH) return setError('Pick a stronger password.');
-    const patch = accessPatch(form);
+    // A new client account is named after the person unless a company name was typed.
+    const filled = { ...form, client_company: form.client_company || form.name };
+    const problem = accessError(filled);
+    if (problem) return setError(problem);
+    setBusy(true);
     try {
+      const patch = await resolveAccess(filled, { full_name: form.name.trim(), email: form.email.trim() });
       const result = await adminCreateUser({
         email: form.email.trim(),
         password: form.password,
@@ -138,6 +270,7 @@ function AddUserModal({ onClose, onSaved }) {
       });
       onSaved(result.profile, true);
     } catch (err) {
+      setBusy(false);
       return setError(authMessage(err));
     }
     return onClose();
@@ -147,11 +280,12 @@ function AddUserModal({ onClose, onSaved }) {
     <Modal
       title="Add user"
       onClose={onClose}
+      size="lg"
       footer={
         <>
           <Button onClick={onClose}>Cancel</Button>
-          <Button type="submit" form="add-user-form" variant="primary">
-            Create user
+          <Button type="submit" form="add-user-form" variant="primary" disabled={busy}>
+            {busy ? 'Creating…' : 'Create user'}
           </Button>
         </>
       }

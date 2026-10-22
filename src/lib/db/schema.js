@@ -51,7 +51,8 @@ export function toRow(table, record) {
 
 /** Row → app record. */
 export function fromRow(table, row) {
-  if (!row) return row;
+  // Tables not listed above (profiles) are used with their column names as they are.
+  if (!row || !TABLES[table]) return row;
   const record = {};
   Object.entries(row).forEach(([column, value]) => {
     const key = camel(column);

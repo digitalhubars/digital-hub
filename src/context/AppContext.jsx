@@ -545,6 +545,43 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
   };
 
   // ---- Groups, settings, profile ---------------------------------------------
+  // ---- Users & roles: what a client or manager login can see ------------------------
+
+  /**
+   * The client account a client login belongs to: its stores and permissions.
+   * `id` empty → a new client account (contact details taken from the login).
+   */
+  const saveClientAccess = async ({ id, company, storeIds, permissions, contact = '', email = '' }) => {
+    const existing = clients.find((c) => c.id === id);
+    const record = existing
+      ? { ...existing, storeIds, permissions }
+      : { id: uid('cl'), company: company.trim(), contact, email, phone: '', status: 'active', storeIds, permissions, createdAt: Date.now() };
+    await setClients((list) => (existing ? list.map((c) => (c.id === record.id ? record : c)) : [record, ...list]));
+    log(`${existing ? 'Updated' : 'Created'} client ${record.company} with access to ${storeIds.length} store(s)`, 'client');
+    return record;
+  };
+
+  /**
+   * The store group a manager looks after and the stores in it. A store belongs to one
+   * group, so ticking a store moves it here; unticking moves it back to another group.
+   * `id` empty → a new group called `name`. Returns the group id.
+   */
+  const saveManagerGroup = async ({ id, name, storeIds }) => {
+    const existing = groupRows.find((g) => g.id === id);
+    const groupId = existing ? existing.id : uid('g');
+    if (!existing) await setGroups((list) => [...list, { id: groupId, name: name.trim() }]);
+    const fallback = (groupRows.find((g) => g.id === 'g_main' && g.id !== groupId) || groupRows.find((g) => g.id !== groupId))?.id;
+    await setStores((list) =>
+      list.map((s) => {
+        if (storeIds.includes(s.id)) return s.groupId === groupId ? s : { ...s, groupId };
+        if (s.groupId === groupId && fallback) return { ...s, groupId: fallback };
+        return s;
+      }),
+    );
+    log(`${existing ? 'Updated' : 'Created'} store group ${existing?.name || name.trim()} (${storeIds.length} store(s))`, 'settings');
+    return groupId;
+  };
+
   const saveGroup = (group, storeIdsInGroup, isNew) => {
     const id = isNew ? uid('g') : group.id;
     setGroups((list) => (isNew ? [...list, { ...group, id }] : list.map((g) => (g.id === id ? { ...g, ...group } : g)))).catch(() => {});
@@ -655,7 +692,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
     saveProduct, deleteProduct, updateOrderStatus,
     resyncStore, testConnection, saveStore, startOAuth, reauthorizeStore, setStoreClients, toggleStorePause, deleteStore,
     saveClient, deleteClient, setClientStatus, resendInvite, viewAsClient,
-    saveGroup, deleteGroup, updateSettings, updateProfile,
+    saveGroup, deleteGroup, updateSettings, updateProfile, saveClientAccess, saveManagerGroup,
     exportBackup, importBackup, hasSampleData, loadSampleData, removeSampleData,
     isOAuthPlatform, PLATFORMS,
   };
