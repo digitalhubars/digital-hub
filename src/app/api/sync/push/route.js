@@ -16,6 +16,9 @@ export const POST = route(async (request, { table, id, before }) => {
 
   const record = await getRecord(table, id);
   if (!record || record.syncState !== 'pending') return { state: record?.syncState || 'gone', error: record?.syncError };
-  const prior = before && typeof before === 'object' ? { stock: before.stock ?? null, category: before.category ?? '' } : null;
+  const prior =
+    before && typeof before === 'object'
+      ? { stock: before.stock ?? null, category: before.category ?? '', title: before.title, price: before.price, status: before.status, sku: before.sku }
+      : null;
   return table === 'products' ? pushProduct(record, prior) : pushOrder(record);
 });

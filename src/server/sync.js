@@ -1,10 +1,13 @@
 import 'server-only';
 import { randomBytes } from 'node:crypto';
 import { fromRow, toRow } from '../lib/db/schema';
+import { authorizedCredentials, credentialsFrom, expiringSoon, loadSecretsRow, saveWooSecrets } from './credentials';
+import { decrypt } from './crypto';
 import {
   customerDocId,
   customerFromOrder,
   customerFromWoo,
+  guestDocId,
   orderCustomerId,
   orderDocId,
   orderFromWoo,
@@ -13,10 +16,13 @@ import {
   productToWoo,
   CRM_TO_WOO,
 } from './mappers';
+import { getAdapter } from './platforms';
 import { adminDb, must } from './supabase';
-import { WooError, wooFetch, wooFetchAll } from './woo';
+import { WooError, wooFetch } from './woo';
 
-// WooCommerce ⇄ Supabase. Runs only in the API routes, with the secret key.
+// Stores ⇄ Supabase. Runs only in the API routes, with the secret key.
+// Every platform imports through its adapter (src/server/platforms); WooCommerce also
+// receives Digital Hub edits (push) and streams changes in through webhooks.
 
 export const WEBHOOK_TOPICS = [
   'product.created',
@@ -51,34 +57,25 @@ export async function upsert(table, records) {
 export const patch = async (table, id, fields) => must(await db().from(table).update(toRow(table, fields)).eq('id', id));
 export const remove = async (table, ids) => must(await db().from(table).delete().in('id', [].concat(ids)));
 
+/** The store, its secrets row (webhook secret decrypted) and its decrypted credentials. */
 export async function loadStore(storeId) {
-  const [store, secrets] = await Promise.all([
-    getRecord('stores', storeId),
-    db().from('store_secrets').select('*').eq('store_id', storeId).maybeSingle().then(must),
-  ]);
-  const creds =
-    secrets?.consumer_key && secrets?.consumer_secret
-      ? { url: secrets.url || store?.url, consumerKey: secrets.consumer_key, consumerSecret: secrets.consumer_secret }
-      : null;
-  return { store, secrets, creds };
+  const [store, row] = await Promise.all([getRecord('stores', storeId), loadSecretsRow(storeId)]);
+  const secrets = row ? { ...row, webhook_secret: decrypt(row.webhook_secret) } : null;
+  return { store, secrets, creds: store && row ? credentialsFrom(store, row) : null };
 }
 
-export async function saveSecrets(storeId, fields) {
-  must(await db().from('store_secrets').upsert({ store_id: storeId, ...fields, updated_at: new Date().toISOString() }, { onConflict: 'store_id' }));
-}
-
-// Why a store can't be synced live right now, or null if it can.
+// Why Digital Hub can't send an edit to this store right now, or null if it can.
 export function syncBlocker(store, creds) {
   if (!store) return 'This store no longer exists.';
   if (store.sample) return 'sample';
-  if (store.platform !== 'WooCommerce') return `Live sync for ${store.platform} isn’t available yet. Only WooCommerce stores sync for now.`;
-  if (!creds) return 'No API keys are saved for this store. Edit the integration and paste the consumer key and secret.';
+  if (!getAdapter(store.platform)?.pushEdits) return `${store.platform} products and orders sync into Digital Hub, but edits made here aren’t sent to ${store.platform} yet.`;
+  if (!creds) return 'This store isn’t connected yet. Edit the integration to add its keys or authorize it.';
   return null;
 }
 
 export const setStoreHealth = (storeId, fields) => patch('stores', storeId, fields);
 
-// ---- Pull: WooCommerce → Supabase ------------------------------------------------
+// ---- Pull: store → Supabase (every platform) ---------------------------------------
 
 async function pendingIds(table, storeId) {
   const rows = must(await db().from(table).select('id').eq('store_id', storeId).eq('sync_state', 'pending'));
@@ -90,65 +87,109 @@ export async function isPending(table, id) {
   return row?.sync_state === 'pending';
 }
 
-/** Collects the writes for a batch of WooCommerce items, then applies them. */
+const customerIdOf = (storeId, c) => (c?.externalId ? customerDocId(storeId, c.externalId) : guestDocId(storeId, c?.email));
+
+/**
+ * Writes what an adapter returned. IDs come from the platform's own IDs
+ * ({store}_p{id}, {store}_o{id}, {store}_c{id}), so syncing again updates rows instead of
+ * adding duplicates. Rows with a Digital Hub edit still on its way out are left alone.
+ */
+export async function writeRecords(storeId, { products = [], orders = [], customers = [] }) {
+  const [skipProducts, skipOrders] = await Promise.all([pendingIds('products', storeId), pendingIds('orders', storeId)]);
+  const stamp = { syncState: 'synced', syncError: null };
+  const del = { products: [], orders: [] };
+
+  const productRows = new Map();
+  products.forEach((p) => {
+    const id = productDocId(storeId, p.externalId);
+    if (skipProducts.has(id)) return;
+    if (p.deleted) del.products.push(id);
+    else productRows.set(id, { ...p, id, storeId, externalId: String(p.externalId), ...stamp });
+  });
+
+  const customerRows = new Map();
+  customers.forEach((c) => {
+    const id = c.id || customerDocId(storeId, c.externalId);
+    customerRows.set(id, {
+      id,
+      storeId,
+      externalId: c.externalId ? String(c.externalId) : null,
+      name: c.name || 'Customer',
+      email: c.email || '',
+      updatedAt: c.updatedAt || Date.now(),
+    });
+  });
+
+  const orderRows = new Map();
+  orders.forEach((o) => {
+    const id = orderDocId(storeId, o.externalId);
+    if (skipOrders.has(id)) return;
+    if (o.deleted) {
+      del.orders.push(id);
+      return;
+    }
+    const { customer, ...rest } = o;
+    const customerId = rest.customerId || customerIdOf(storeId, customer);
+    if (!customerRows.has(customerId)) {
+      customerRows.set(customerId, {
+        id: customerId,
+        storeId,
+        externalId: customer?.externalId ? String(customer.externalId) : null,
+        name: customer?.name || 'Customer',
+        email: customer?.email || '',
+        updatedAt: o.updatedAt || Date.now(),
+      });
+    }
+    orderRows.set(id, { ...rest, id, storeId, externalId: String(o.externalId), customerId, ...stamp });
+  });
+
+  // Customers before orders (orders point at them).
+  await upsert('customers', [...customerRows.values()]);
+  await upsert('products', [...productRows.values()]);
+  await upsert('orders', [...orderRows.values()]);
+  if (del.products.length) await remove('products', del.products);
+  if (del.orders.length) await remove('orders', del.orders);
+  return { products: productRows.size, orders: orderRows.size, customers: customerRows.size };
+}
+
+/** WooCommerce webhook payloads → rows (one item at a time). */
 export function createBatch() {
-  const writes = { products: [], orders: [], customers: [] };
-  const deletes = { products: [], orders: [], customers: [] };
+  const out = { products: [], orders: [], customers: [] };
   return {
     product(storeId, p, skip = new Set()) {
-      const id = productDocId(storeId, p.id);
-      if (skip.has(id)) return; // a Digital Hub edit is on its way out; don't overwrite it
-      if (p.status === 'trash') deletes.products.push(id);
-      else writes.products.push({ id, ...productFromWoo(storeId, p) });
+      if (skip.has(productDocId(storeId, p.id))) return;
+      out.products.push(p.status === 'trash' ? { externalId: String(p.id), deleted: true } : productFromWoo(storeId, p));
     },
     order(storeId, o, skip = new Set()) {
-      const id = orderDocId(storeId, o.id);
-      if (skip.has(id)) return;
+      if (skip.has(orderDocId(storeId, o.id))) return;
       if (o.status === 'trash') {
-        deletes.orders.push(id);
+        out.orders.push({ externalId: String(o.id), deleted: true });
         return;
       }
-      writes.orders.push({ id, ...orderFromWoo(storeId, o) });
-      // Make sure the order's customer exists (guests have no customer record in WooCommerce).
-      writes.customers.push({ id: orderCustomerId(storeId, o), ...customerFromOrder(storeId, o) });
+      out.orders.push({ ...orderFromWoo(storeId, o), customerId: orderCustomerId(storeId, o) });
+      out.customers.push({ ...customerFromOrder(storeId, o), id: orderCustomerId(storeId, o) });
     },
     customer(storeId, c) {
-      writes.customers.push({ id: customerDocId(storeId, c.id), ...customerFromWoo(storeId, c) });
+      out.customers.push(customerFromWoo(storeId, c));
     },
     delete(table, id) {
-      deletes[table].push(id);
+      if (table === 'products') out.products.push({ id, deleted: true });
+      if (table === 'orders') out.orders.push({ id, deleted: true });
     },
-    async commit() {
-      // Customers before orders; the same customer can appear many times, keep the last.
-      for (const table of ['customers', 'products', 'orders']) {
-        const unique = [...new Map(writes[table].map((r) => [r.id, r])).values()];
-        await upsert(table, unique);
-        if (deletes[table].length) await remove(table, deletes[table]);
-      }
+    async commit(storeId) {
+      const deletes = { products: out.products.filter((p) => p.id && p.deleted).map((p) => p.id), orders: out.orders.filter((o) => o.id && o.deleted).map((o) => o.id) };
+      await writeRecords(storeId, {
+        products: out.products.filter((p) => !(p.id && p.deleted)),
+        orders: out.orders.filter((o) => !(o.id && o.deleted)),
+        customers: out.customers,
+      });
+      if (deletes.products.length) await remove('products', deletes.products);
+      if (deletes.orders.length) await remove('orders', deletes.orders);
     },
   };
 }
 
-/** Imports products, orders and customers. With `since` (ms), only what changed after it. */
-export async function importStore(storeId, creds, { since } = {}) {
-  const changed = since ? { modified_after: new Date(since - 120000).toISOString() } : {};
-  const [skipProducts, skipOrders] = await Promise.all([pendingIds('products', storeId), pendingIds('orders', storeId)]);
-
-  const products = await wooFetchAll(creds, '/products', { status: 'any', ...changed });
-  const orders = await wooFetchAll(creds, '/orders', changed);
-  // The customers endpoint has no "changed since" filter; new buyers also arrive through orders.
-  const customers = since ? [] : await wooFetchAll(creds, '/customers', { role: 'all' }, 10);
-
-  const batch = createBatch();
-  products.forEach((p) => batch.product(storeId, p, skipProducts));
-  customers.forEach((c) => batch.customer(storeId, c));
-  orders.forEach((o) => batch.order(storeId, o, skipOrders));
-  await batch.commit();
-
-  return { products: products.length, orders: orders.length, customers: customers.length };
-}
-
-// ---- Push: Supabase → WooCommerce -------------------------------------------------
+// ---- Push: Supabase → WooCommerce ----------------------------------------------------
 
 async function categoryRef(creds, name) {
   if (!name) return null;
@@ -160,13 +201,45 @@ async function categoryRef(creds, name) {
 }
 
 /**
- * Sends one pending product (create, update or delete) to WooCommerce.
+ * Edits for platforms whose adapter has pushProduct / pushOrder (eBay, …): the adapter
+ * talks to the platform and returns the fields to save, or { deleted: true }.
+ */
+async function pushWithAdapter(table, record, before, store) {
+  const adapter = getAdapter(store.platform);
+  const push = table === 'products' ? adapter.pushProduct : adapter.pushOrder;
+  if (!push) {
+    const message = `${store.platform} doesn’t take ${table === 'products' ? 'product' : 'order'} edits from Digital Hub yet.`;
+    await patch(table, record.id, { syncState: 'error', syncError: message });
+    return { state: 'error', error: message };
+  }
+  try {
+    const creds = await authorizedCredentials(store, adapter);
+    const result = await push.call(adapter, { store, creds }, record, before);
+    if (result?.deleted) {
+      await remove(table, record.id);
+      return { state: 'gone' };
+    }
+    await patch(table, record.id, { ...(result || {}), syncState: 'synced', syncError: null, syncedAt: Date.now() });
+    return { state: 'synced' };
+  } catch (err) {
+    console.warn(`${table} push failed`, record.id, err.message);
+    await patch(table, record.id, { syncState: 'error', syncError: err.message, ...(table === 'products' && record.pendingDelete ? { pendingDelete: false } : {}) });
+    return { state: 'error', error: err.message };
+  }
+}
+
+/**
+ * Sends one pending product (create, update or delete) to its store.
  * Returns { state: 'synced' | 'gone' | 'pending' | 'error', error? }.
  */
 export async function pushProduct(product, before) {
   const { id } = product;
   const { store, creds } = await loadStore(product.storeId);
   const blocker = syncBlocker(store, creds);
+  if (store && !blocker && store.platform !== 'WooCommerce') {
+    if (store.status === 'paused') return { state: 'pending', error: `${store.name} is paused. The change goes out when it resumes.` };
+    return pushWithAdapter('products', product, before, store);
+  }
   if (blocker === 'sample') {
     if (product.pendingDelete) {
       await remove('products', id);
@@ -219,11 +292,15 @@ export async function pushProduct(product, before) {
   }
 }
 
-/** Sends a pending order status change to WooCommerce. */
+/** Sends a pending order status change to its store. */
 export async function pushOrder(order) {
   const { id } = order;
   const { store, creds } = await loadStore(order.storeId);
   const blocker = syncBlocker(store, creds);
+  if (store && !blocker && store.platform !== 'WooCommerce') {
+    if (store.status === 'paused') return { state: 'pending', error: `${store.name} is paused. The change goes out when it resumes.` };
+    return pushWithAdapter('orders', order, null, store);
+  }
   if (blocker === 'sample') {
     await patch('orders', id, { syncState: 'synced', syncError: null });
     return { state: 'synced' };
@@ -257,9 +334,9 @@ export async function pushPending(storeId) {
   }
 }
 
-// ---- Webhooks (WooCommerce → Digital Hub in real time) --------------------------------
+// ---- WooCommerce webhooks (store → Digital Hub in real time) ----------------------------
 
-/** Public address of this app, for the webhook URLs WooCommerce calls. */
+/** Public address of this app, for webhook and OAuth callback URLs. */
 export function appOrigin(request) {
   if (process.env.APP_URL) return process.env.APP_URL.replace(/\/+$/, '');
   if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
@@ -284,7 +361,7 @@ export async function ensureWebhooks(storeId, creds, secrets, origin) {
     });
     ids.push(data.id);
   }
-  await saveSecrets(storeId, { webhook_secret: secret, webhook_ids: ids, webhook_url: deliveryUrl });
+  await saveWooSecrets(storeId, { webhook_secret: secret, webhook_ids: ids, webhook_url: deliveryUrl });
   return null;
 }
 
@@ -298,35 +375,51 @@ export async function removeWebhooks(creds, ids = []) {
   }
 }
 
-// ---- Full sync used by "Sync now", new integrations and the schedule ----------------------
+// ---- Full sync used by "Sync now", new connections and the schedule ----------------------
 
 export async function syncStoreNow(storeId, { incremental = false, origin = '' } = {}) {
-  const { store, secrets, creds } = await loadStore(storeId);
-  const blocker = syncBlocker(store, creds);
-  if (blocker === 'sample') return { ok: true, message: 'Sample store: nothing to sync.' };
-  if (blocker) {
-    if (store) await setStoreHealth(storeId, { health: 'error', lastError: blocker });
-    return { ok: false, message: blocker };
-  }
+  const store = await getRecord('stores', storeId);
+  if (!store) return { ok: false, message: 'This store no longer exists.' };
+  if (store.sample) return { ok: true, message: 'Sample store: nothing to sync.' };
+  const adapter = getAdapter(store.platform);
+  if (!adapter) return { ok: false, message: `Digital Hub can’t sync ${store.platform} stores yet.` };
+  if (adapter.auth === 'csv') return { ok: true, message: `${store.platform} has no API. Import its CSV exports from the store’s menu.` };
   if (store.status === 'paused') return { ok: false, message: `${store.name} is paused. Resume it to sync.` };
 
   const startedAt = Date.now();
   try {
     await setStoreHealth(storeId, { health: 'checking' });
-    await pushPending(storeId);
-    const counts = await importStore(storeId, creds, { since: incremental ? store.lastSync : undefined });
-    const webhookNote = await ensureWebhooks(storeId, creds, secrets, origin);
+    const creds = await authorizedCredentials(store, adapter);
+    const ctx = { store, creds };
+    if (adapter.pushEdits) await pushPending(storeId);
+
+    const since = incremental ? store.lastSync : undefined;
+    const [products, orders, customers] = [
+      adapter.syncProducts ? await adapter.syncProducts(ctx, { since }) : [],
+      adapter.syncOrders ? await adapter.syncOrders(ctx, { since }) : [],
+      adapter.syncCustomers ? await adapter.syncCustomers(ctx, { since }) : [],
+    ];
+    const counts = await writeRecords(storeId, { products, orders, customers });
+
+    let note = null;
+    if (store.platform === 'WooCommerce') {
+      const { secrets } = await loadStore(storeId);
+      note = await ensureWebhooks(storeId, creds, secrets, origin);
+    }
     await setStoreHealth(storeId, {
-      health: 'connected',
+      health: expiringSoon(creds) ? 'expiring' : 'connected',
       lastError: null,
       lastSync: startedAt,
-      ...(incremental ? {} : { counts: { products: counts.products, orders: counts.orders, customers: counts.customers } }),
-      webhooks: isLocal(origin) ? 'local' : 'active',
+      ...(incremental ? {} : { counts }),
+      ...(store.platform === 'WooCommerce' ? { webhooks: isLocal(origin) ? 'local' : 'active' } : {}),
     });
-    return { ok: true, counts, message: webhookNote };
+    return { ok: true, counts, message: note };
   } catch (err) {
     console.error('sync failed', storeId, err.message);
-    await setStoreHealth(storeId, { health: 'error', lastError: err.message });
+    const current = await getRecord('stores', storeId);
+    // authorizedCredentials already marked needs_auth / expired; keep that over a generic error.
+    const health = ['needs_auth', 'expired'].includes(current?.health) ? current.health : err.auth && adapter.auth === 'oauth' ? 'expired' : 'error';
+    await setStoreHealth(storeId, { health, lastError: err.message });
     return { ok: false, message: err.message };
   }
 }

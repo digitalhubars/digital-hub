@@ -45,7 +45,7 @@ export async function POST(request) {
       const id = orderDocId(storeId, body.id);
       batch.order(storeId, body, new Set((await isPending('orders', id)) ? [id] : []));
     } else if (topic.startsWith('customer.') && body.id) batch.customer(storeId, body);
-    await batch.commit();
+    await batch.commit(storeId);
     await setStoreHealth(storeId, { lastSync: Date.now(), health: 'connected', lastError: null });
     return new Response('ok');
   } catch (err) {

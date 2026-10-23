@@ -44,7 +44,9 @@ export const STATUS = {
   paused: ['Paused', 'neutral'],
   checking: ['Checking…', 'info'],
   manual: ['Not synced', 'neutral'],
-  expiring: ['Reauthorize soon', 'warning'],
+  expiring: ['Re-authorize soon', 'warning'],
+  needs_auth: ['Authorization needed', 'warning'],
+  expired: ['Expired', 'danger'],
   invited: ['Invite pending', 'info'],
   suspended: ['Suspended', 'danger'],
 };

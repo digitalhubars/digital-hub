@@ -9,7 +9,7 @@ const TABLES = {
   clients: ['id', 'company', 'contact', 'email', 'phone', 'status', 'storeIds', 'permissions', 'sample', 'createdAt'],
   stores: [
     'id', 'name', 'platform', 'url', 'keyHint', 'accountId', 'region', 'groupId', 'status', 'health',
-    'lastSync', 'lastError', 'counts', 'webhooks', 'syncFrequency', 'sample', 'createdAt',
+    'lastSync', 'lastError', 'counts', 'webhooks', 'syncFrequency', 'sample', 'createdAt', 'authExpiresAt',
   ],
   products: [
     'id', 'storeId', 'externalId', 'title', 'sku', 'category', 'price', 'salePrice', 'stock', 'stockStatus', 'status',
@@ -25,7 +25,7 @@ const TABLES = {
   notifications: ['id', 'at', 'text', 'tone', 'read'],
 };
 
-const TIME_FIELDS = new Set(['at', 'createdAt', 'lastSync', 'editedAt', 'syncedAt', 'updatedAt', 'placedAt']);
+const TIME_FIELDS = new Set(['at', 'createdAt', 'lastSync', 'editedAt', 'syncedAt', 'updatedAt', 'placedAt', 'authExpiresAt']);
 const NUMBER_FIELDS = new Set(['price', 'salePrice', 'subtotal', 'shipping', 'tax', 'total']);
 
 export const TABLE_NAMES = Object.keys(TABLES);

@@ -28,7 +28,16 @@ export class HttpError extends Error {
   }
 }
 
+// A missing table or column means the latest supabase/migrations file hasn't been run yet.
+const SCHEMA_MISSING = new Set(['PGRST205', 'PGRST204', '42P01', '42703']);
+
 export function must({ data, error }) {
+  if (error && SCHEMA_MISSING.has(error.code)) {
+    throw new HttpError(
+      500,
+      'The database needs an update: open Supabase → SQL Editor and run the newest file in supabase/migrations (20261023000000_marketplace_integrations.sql).',
+    );
+  }
   if (error) throw new Error(error.message);
   return data;
 }

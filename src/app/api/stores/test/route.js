@@ -1,24 +1,32 @@
-import { requireAdmin, route } from '../../../../server/supabase';
-import { loadStore } from '../../../../server/sync';
-import { wooFetch } from '../../../../server/woo';
+import { authorizedCredentials } from '../../../../server/credentials';
+import { getAdapter } from '../../../../server/platforms';
+import { HttpError, requireAdmin, route } from '../../../../server/supabase';
+import { getRecord } from '../../../../server/sync';
 
 export const dynamic = 'force-dynamic';
 
-/** Checks a URL + key pair (or the saved keys of a store) without saving anything. */
-export const POST = route(async (request, { storeId, url, consumerKey, consumerSecret }) => {
+/**
+ * "Test connection" for any platform. With `input` (the typed keys) it tests those without
+ * saving anything; otherwise it tests the store's saved credentials (refreshing tokens if needed).
+ */
+export const POST = route(async (request, { storeId, platform, input }) => {
   await requireAdmin(request);
-  let creds = url && consumerKey && consumerSecret ? { url, consumerKey, consumerSecret } : null;
-  if (!creds && storeId) {
-    creds = (await loadStore(storeId)).creds;
-    if (creds && url) creds = { ...creds, url };
-  }
-  if (!creds) return { ok: false, message: 'Paste the consumer key and secret to test them.' };
+  const store = storeId ? await getRecord('stores', storeId) : null;
+  const adapter = getAdapter(platform || store?.platform);
+  if (!adapter) throw new HttpError(400, `Digital Hub can’t connect ${platform} stores yet.`);
+  if (adapter.auth === 'csv') return adapter.test({});
+
   try {
-    const [{ total: products }, { total: orders }] = await Promise.all([
-      wooFetch(creds, '/products', { query: { per_page: 1, status: 'any' } }),
-      wooFetch(creds, '/orders', { query: { per_page: 1 } }),
-    ]);
-    return { ok: true, message: `Connected. Found ${products} products and ${orders} orders.` };
+    const hasInput = input && Object.values(input).some(Boolean);
+    if (hasInput && adapter.connect) {
+      const creds = await adapter.connect(input);
+      return await adapter.test({ store: store || { id: 'test', platform: adapter.platform }, creds });
+    }
+    if (!store) {
+      return { ok: false, message: adapter.auth === 'oauth' ? `Save the store, then authorize ${adapter.platform}.` : 'Paste the API keys to test them.' };
+    }
+    const creds = await authorizedCredentials(store, adapter);
+    return await adapter.test({ store, creds });
   } catch (err) {
     return { ok: false, message: err.message };
   }

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { defaultSettings, isOAuthPlatform, PLATFORMS, sessions as initialSessions } from '../data';
+import { isCsvPlatform } from '../data/platforms';
 import { canVisitPage, routePath, settingsTabsFor } from '../config/navigation';
 import { getAccess } from '../config/roles';
 import { signOut as authSignOut, updateOwnProfile, authMessage } from '../lib/auth';
@@ -304,13 +305,16 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
     callApi('sync/push', { table, id, before }).catch((err) => ({ state: 'error', error: callError(err) }));
 
   const reportSync = async (collectionName, id, { title, success, store, before }) => {
-    // Sample, paused and not-yet-supported stores answer at once: the server marks the
-    // row synced (samples), leaves it pending (paused) or records why it can't sync.
-    if (store?.sample || store?.status === 'paused' || (store && store.platform !== 'WooCommerce')) {
+    // Sample, paused and import-only stores answer at once: the server marks the row synced
+    // (samples), leaves it pending (paused) or records that the platform doesn't take edits.
+    if (store?.sample || store?.status === 'paused' || (store && !PLATFORMS[store.platform]?.twoWay)) {
       pushToStore(collectionName, id, before);
       if (store.sample) return showToast({ title: success, body: `${store.name} is a sample store, so nothing was sent.` });
       if (store.status === 'paused') return showToast({ title: 'Saved. Waiting to sync', body: `${store.name} is paused. The change goes out when it resumes.` });
-      return showToast({ title: 'Saved in Digital Hub', body: `Live sync for ${store.platform} isn’t available yet, so ${store.name} wasn’t changed.` });
+      return showToast({
+        title: 'Saved in Digital Hub',
+        body: `${store.platform} data syncs into Digital Hub, but edits aren’t sent to ${store.platform} yet, so ${store.name} wasn’t changed.`,
+      });
     }
     showToast({ pending: true, title, body: store?.name });
     const result = await pushToStore(collectionName, id, before);
@@ -341,7 +345,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
       title: `Sending to ${store.platform}…`,
       success: `${record.title} ${isNew ? 'created' : 'updated'} in ${store.platform}`,
       store,
-      before: previous ? { stock: previous.stock, category: previous.category } : null,
+      before: previous ? { stock: previous.stock, category: previous.category, title: previous.title, price: previous.price, status: previous.status, sku: previous.sku } : null,
     });
   };
 
@@ -369,10 +373,17 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
   };
 
   // ---- Integrations --------------------------------------------------------
+  // The server does the work for every platform (src/server/platforms); these call it.
+
   const resyncStore = async (store, { quiet } = {}) => {
     if (store.status === 'paused') return;
-    if (store.platform !== 'WooCommerce' || store.sample) {
-      if (!quiet) showToast({ title: store.sample ? `${store.name} is a sample store` : `Live sync for ${store.platform} isn’t available yet` });
+    if (store.sample || isCsvPlatform(store.platform)) {
+      if (!quiet) {
+        showToast({
+          title: store.sample ? `${store.name} is a sample store` : `${store.platform} has no API`,
+          body: store.sample ? undefined : 'Import its orders and listings as CSV files from the store’s menu.',
+        });
+      }
       return;
     }
     setSyncingStores((s) => ({ ...s, [store.id]: true }));
@@ -396,29 +407,39 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
     }
   };
 
-  // form: { platform, url, consumerKey, consumerSecret, storeId? }
-  const testConnection = async (form) => {
-    if (form.platform !== 'WooCommerce') {
-      return { ok: false, message: `Live connection for ${form.platform} isn’t available yet. Only WooCommerce connects for now.` };
-    }
+  /** form: { platform, storeId?, input? } — `input` = the typed keys (tested without saving). */
+  const testConnection = async ({ platform, storeId, input }) => {
     try {
-      return await callApi('stores/test', {
-        storeId: form.storeId,
-        url: form.url,
-        consumerKey: form.consumerKey || undefined,
-        consumerSecret: form.consumerSecret || undefined,
-      });
+      return await callApi('stores/test', { platform, storeId, input });
     } catch (err) {
       return { ok: false, message: callError(err) };
     }
   };
 
-  const startOAuth = async () => {
-    throw new Error('Marketplace sign-in isn’t available yet.');
+  /** Authorize / Re-authorize: sends the admin to the marketplace's sign-in, which redirects back. */
+  const authorizeStore = async (store) => {
+    showToast({ pending: true, title: `Opening ${store.platform}…`, body: 'Sign in and approve access, then you’ll come back here.' });
+    try {
+      const { url } = await callApi('integrations/authorize', { storeId: store.id });
+      window.location.assign(url);
+    } catch (err) {
+      showToast({ tone: 'danger', title: `Couldn’t start ${store.platform} authorization`, body: callError(err) });
+    }
   };
 
-  const reauthorizeStore = (store) =>
-    showToast({ title: `Live connection for ${store.platform} isn’t available yet`, body: 'Only WooCommerce stores sync for now.' });
+  /** CSV import for stores without an API (Mercari). kind: 'orders' | 'listings'. */
+  const importStoreCsv = async (store, kind, file) => {
+    showToast({ pending: true, title: `Importing ${kind}…`, body: file.name });
+    try {
+      const result = await callApi('integrations/import', { storeId: store.id, kind, csv: await file.text() });
+      log(`Imported ${kind} into ${store.name} from ${file.name}`, 'integration');
+      showToast({ title: `${store.name} updated`, body: result.message });
+      return result;
+    } catch (err) {
+      showToast({ tone: 'danger', title: 'Couldn’t import the file', body: callError(err) });
+      return null;
+    }
+  };
 
   const setStoreClients = (store, clientIds) => {
     setClients((list) =>
@@ -434,28 +455,33 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
   };
 
   /**
-   * store: the store fields; credentials: { consumerKey, consumerSecret } when new keys were typed.
-   * Keys go to the server (store_secrets table), which no browser can read.
+   * store: the store fields. credentials: the typed keys when they changed —
+   * WooCommerce { consumerKey, consumerSecret }; other platforms their `fields` (Shopify { domain, token },
+   * eBay's own app { clientId, clientSecret, ruName }, …).
+   * Keys go to the server, which checks them and saves them encrypted; no browser can read them back.
+   * options.authorize: for OAuth platforms, go straight to the marketplace's sign-in after saving.
    */
-  const saveStore = async (store, isNew, clientId, credentials) => {
+  const saveStore = async (store, isNew, clientId, credentials, { authorize = false } = {}) => {
     const { credentialsChanged: _c, ...data } = store;
     const id = isNew ? uid('st') : data.id;
     const previous = storeOf(id);
+    const auth = PLATFORMS[data.platform]?.auth;
     const isWoo = data.platform === 'WooCommerce';
+    const samePlatform = previous?.platform === data.platform;
     const urlChanged = !isNew && previous?.url !== data.url;
-    const record = {
-      ...previous,
-      ...data,
-      id,
-      health: isWoo ? (isNew || credentials || urlChanged ? 'checking' : previous?.health || 'checking') : 'manual',
-      lastSync: previous?.lastSync || null,
-      createdAt: previous?.createdAt || Date.now(),
-    };
+    const health =
+      auth === 'oauth'
+        ? samePlatform && previous?.health && previous.health !== 'manual' ? previous.health : 'needs_auth'
+        : auth === 'csv'
+          ? (samePlatform && previous?.health) || 'manual'
+          : isNew || credentials || urlChanged || !samePlatform
+            ? 'checking'
+            : previous?.health || 'checking';
+    const record = { ...previous, ...data, id, health, lastSync: previous?.lastSync || null, createdAt: previous?.createdAt || Date.now() };
 
     try {
       await setStores((list) => (isNew ? [...list, record] : list.map((s) => (s.id === id ? record : s))));
       if (isWoo && (credentials || urlChanged || isNew)) {
-        // Keys go to the server, which stores them where no browser can read them back.
         await callApi('stores/secrets', { storeId: id, url: record.url, ...(credentials || {}) }).catch((err) => {
           showToast({ tone: 'danger', title: 'Couldn’t save the API keys', body: callError(err) });
           throw err;
@@ -463,18 +489,39 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
       }
       if (clientId) await setClients((list) => list.map((c) => (c.id === clientId ? { ...c, storeIds: [...(c.storeIds || []), id] } : c)));
     } catch {
-      return;
+      return null;
+    }
+
+    // Typed keys (Shopify, Walmart, or an eBay store's own app keys) are checked and saved by the server.
+    let mustAuthorize = authorize;
+    if (!isWoo && credentials) {
+      const result = await callApi('integrations/credentials', { storeId: id, input: credentials }).catch((err) => ({ ok: false, message: callError(err) }));
+      if (!result.ok) {
+        log(`Saved ${record.platform} store ${record.name} (keys rejected)`, 'integration');
+        showToast({ tone: 'danger', title: `${record.platform} didn’t accept the keys`, body: `${result.message} The store is saved; edit it to try again.` });
+        return id;
+      }
+      // New app keys need the seller to approve access again.
+      if (auth === 'oauth' && !result.authorized) mustAuthorize = true;
     }
 
     log(`${isNew ? 'Connected' : 'Updated'} ${record.platform} store ${record.name}`, 'integration');
-    if (isWoo && (isNew || credentials || urlChanged) && record.status === 'active') {
+    if (auth === 'oauth' && mustAuthorize) {
+      authorizeStore(record);
+    } else if (auth === 'key' && (isNew || credentials || urlChanged || !samePlatform) && record.status === 'active') {
       resyncStore(record);
     } else {
       showToast({
         title: `${record.name} saved`,
-        body: isWoo ? undefined : `Live sync for ${record.platform} isn’t available yet. The store is saved so you can organize clients.`,
+        body:
+          auth === 'oauth' && record.health !== 'connected'
+            ? `Next: click Authorize to connect it to ${record.platform}.`
+            : auth === 'csv'
+              ? 'Next: import its orders and listings (CSV) from the store’s menu.'
+              : undefined,
       });
     }
+    return id;
   };
 
   const toggleStorePause = (store) => {
@@ -690,7 +737,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
     confirmDialog, askConfirm, closeConfirm, drawer, openDrawer, closeDrawer,
     // actions
     saveProduct, deleteProduct, updateOrderStatus,
-    resyncStore, testConnection, saveStore, startOAuth, reauthorizeStore, setStoreClients, toggleStorePause, deleteStore,
+    resyncStore, testConnection, saveStore, authorizeStore, reauthorizeStore: authorizeStore, importStoreCsv, setStoreClients, toggleStorePause, deleteStore,
     saveClient, deleteClient, setClientStatus, resendInvite, viewAsClient,
     saveGroup, deleteGroup, updateSettings, updateProfile, saveClientAccess, saveManagerGroup,
     exportBackup, importBackup, hasSampleData, loadSampleData, removeSampleData,

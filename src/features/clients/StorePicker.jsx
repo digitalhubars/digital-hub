@@ -3,7 +3,10 @@ import { PLATFORM_NAMES, PLATFORMS } from '../../data/platforms';
 import { ui } from '../../styles/ui';
 
 // Labels a store by its marketplace account ID, or its URL for key-based stores.
-export const storeAddress = (store) => (store.accountId ? `${PLATFORMS[store.platform].account} ${store.accountId}` : store.url);
+export const storeAddress = (store) => {
+  const label = PLATFORMS[store.platform]?.account;
+  return store.accountId && label ? `${label} ${store.accountId}` : store.url || store.accountId || '';
+};
 
 /**
  * Checklist of stores grouped by platform, with "Select all" per platform.

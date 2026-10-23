@@ -7,17 +7,31 @@ Next.js 14 + Tailwind, hosted on **Vercel**, with **Supabase** as the back end (
 | Supabase Auth | Email + password sign-in, confirmation and password-reset emails |
 | Supabase Postgres + Realtime | Stores, products, orders, customers, clients, profiles — live on every open screen |
 | Row Level Security | Who sees and changes what (`supabase/migrations`) |
-| Next.js API routes (`src/app/api`) | Talk to WooCommerce, hold the API keys, manage sign-in accounts |
+| Next.js API routes (`src/app/api`) | Talk to the store platforms, hold their keys and tokens, manage sign-in accounts |
 
-## Live WooCommerce sync
+## Store integrations
 
-- **Connect:** Integrations → Add integration → WooCommerce, paste the site URL and a Read/Write consumer key + secret. Digital Hub imports products, orders and customers and creates webhooks in the store.
-- **Digital Hub → WooCommerce:** product edits (title, SKU, price, stock, status, category), new products, deletes and order status changes are saved as `pending`, then sent by `/api/sync/push`.
-- **WooCommerce → Digital Hub:** the store's webhooks call `/api/woo/webhook` (signed with a per-store secret); changes appear on every open screen.
-- **Safety net:** Vercel Cron calls `/api/cron/sync` daily (`vercel.json`). Vercel's free plan allows one run a day; on Pro, change the schedule to `*/15 * * * *`.
-- API keys live in the `store_secrets` table, which only the server (secret key) can read or write.
+Every platform is one adapter in `src/server/platforms/` with the same interface (`connect` / `authorizeUrl` + `exchangeCode` / `refresh` / `test` / `syncProducts` / `syncOrders`); `index.js` documents it. To add a platform, write one file, register it there, and add it to `src/data/platforms.js`.
 
-Shopify, Amazon, eBay and TikTok Shop stores can be saved (for clients and groups) but don't sync yet.
+| Platform | Connects with | Products & orders |
+| -------- | ------------- | ----------------- |
+| WooCommerce | Site URL + consumer key/secret | Two-way: edits are pushed back, webhooks stream changes in |
+| Shopify | Store domain + Admin API token | Imported (GraphQL Admin API) |
+| eBay | The store's own Client ID + Client Secret + RuName, then Authorize | Two-way: every active listing (Trading API) and orders (Fulfillment API); title, price and quantity edits, ending listings and marking orders shipped go back to eBay |
+| Etsy | The store's own Keystring + Shared Secret, then Authorize (OAuth with PKCE) | Imported (listings + receipts) |
+| Walmart | Client ID + Client Secret | Imported (items + orders; stock isn't included) |
+| Amazon | OAuth via Seller Central | Imported (Listings Items + Orders; line items for the newest 20 orders per sync) |
+| TikTok Shop | OAuth via Seller Center | Imported (products + orders, signed requests) |
+| Mercari | CSV import (no public API) | Orders and listings from CSV files |
+
+- **No duplicates:** rows use the platform's own IDs (`{store}_p{id}`, `{store}_o{id}`, `{store}_c{id}`), so every sync or re-import updates rows in place.
+- **Secrets:** keys and tokens are saved in `store_secrets` encrypted with AES-256-GCM (`TOKEN_ENCRYPTION_KEY`); only the server can read that table.
+- **Tokens:** refreshed automatically 5 minutes before they expire (every sync and the daily cron). A refused refresh marks the store **Expired**; a store without keys or authorization shows **Authorization needed**.
+- **OAuth:** "Authorize" creates a one-time `state` (15 minutes) in `oauth_states`; the platform redirects to `/api/integrations/callback/<amazon|ebay|etsy|tiktok>`, which exchanges the code and returns to Integrations.
+- **Routes:** `/api/stores/test` (Test connection), `/api/integrations/credentials` (save keys), `/api/integrations/authorize`, `/api/integrations/callback/[platform]`, `/api/integrations/import` (CSV), `/api/stores/sync`, `/api/stores/disconnect`.
+- **Schedule:** Vercel Cron calls `/api/cron/sync` daily (`vercel.json`); on Vercel Pro, change it to `*/15 * * * *`.
+
+Each marketplace needs its own developer app; the keys and redirect URLs are listed in `.env.production.example`.
 
 ## Roles
 
@@ -39,6 +53,8 @@ The owner (`src/config/owner.js`, and `owner_emails()` in the migration) becomes
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Browser + server (public; RLS protects the data) |
 | `SUPABASE_SECRET_KEY` | Server only. Bypasses RLS: never commit it, never prefix it with `NEXT_PUBLIC_` |
 | `CRON_SECRET` | Server only. Protects `/api/cron/sync` |
+| `TOKEN_ENCRYPTION_KEY` | Server only. Encrypts store keys and tokens; never change it once stores are connected |
+| Marketplace app keys | Server only. eBay, Etsy, Amazon, TikTok Shop: see `.env.production.example` |
 
 ## Database changes
 

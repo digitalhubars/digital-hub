@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Building2, CircleCheck, Pause, Pencil, Play, Plug, Plus, RefreshCw, Shield, Trash2, TriangleAlert } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Building2, CircleCheck, FileUp, Pause, Pencil, Play, Plug, Plus, RefreshCw, Shield, Trash2, TriangleAlert } from 'lucide-react';
 import ActionMenu from '../../components/ui/ActionMenu';
 import { Badge, StoreBadge } from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
@@ -8,16 +8,41 @@ import DataTable from '../../components/ui/DataTable';
 import PageHeader from '../../components/ui/PageHeader';
 import Select from '../../components/ui/Select';
 import { useApp } from '../../context/AppContext';
-import { isOAuthPlatform, PLATFORM_NAMES } from '../../data/platforms';
+import { isCsvPlatform, isOAuthPlatform, PLATFORM_NAMES } from '../../data/platforms';
 import { timeAgo } from '../../lib/format';
 import { ui } from '../../styles/ui';
 import { storeAddress } from '../clients/StorePicker';
+import Modal from '../../components/ui/Modal';
+import CsvImport from './CsvImport';
 import IntegrationModal from './IntegrationModal';
 import StoreClientsModal from './StoreClientsModal';
 
 export default function IntegrationsPage() {
-  const { stores, groups, clients, resyncStore, syncingStores, toggleStorePause, deleteStore, reauthorizeStore, askConfirm, settings, q } = useApp();
+  const { stores, groups, clients, resyncStore, syncingStores, toggleStorePause, deleteStore, reauthorizeStore, askConfirm, settings, q, showToast } = useApp();
   const [editing, setEditing] = useState(null);
+  const [importFor, setImportFor] = useState(null);
+
+  // Back from a marketplace sign-in: /admin/integrations?connected=<store> or ?authError=…
+  const handledReturn = useRef(false);
+  useEffect(() => {
+    if (handledReturn.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get('connected');
+    const authError = params.get('authError');
+    if (!connected && !authError) {
+      handledReturn.current = true;
+      return;
+    }
+    const store = stores.find((s) => s.id === (connected || params.get('store')));
+    if (connected && !store) return; // wait for the stores to load
+    handledReturn.current = true;
+    window.history.replaceState(null, '', window.location.pathname);
+    if (authError) showToast({ tone: 'danger', title: 'Authorization didn’t finish', body: authError });
+    else {
+      showToast({ title: `${store.name} is authorized`, body: 'Importing products and orders now.' });
+      resyncStore({ ...store, health: 'connected' });
+    }
+  }, [stores, showToast, resyncStore]);
   const [clientsFor, setClientsFor] = useState(null);
   const [platformFilter, setPlatformFilter] = useState('all');
 
@@ -46,7 +71,7 @@ export default function IntegrationsPage() {
         <StatCard
           label="Needs attention"
           value={active.filter((s) => s.health !== 'connected').length}
-          hint="Errors, slow or expiring logins"
+          hint="Errors, expired or missing authorization"
           icon={TriangleAlert}
           tone={active.some((s) => s.health !== 'connected') ? 'warning' : undefined}
         />
@@ -118,7 +143,11 @@ export default function IntegrationsPage() {
               key: 'status',
               label: 'Status',
               aside: true,
-              render: (s) => <Badge status={s.status === 'paused' ? 'paused' : syncingStores[s.id] ? 'checking' : s.health} />,
+              render: (s) => (
+                <span title={s.lastError || (s.authExpiresAt ? `Authorization valid until ${new Date(s.authExpiresAt).toLocaleDateString()}` : '')}>
+                  <Badge status={s.status === 'paused' ? 'paused' : syncingStores[s.id] ? 'checking' : s.health} />
+                </span>
+              ),
             },
             {
               key: 'actions',
@@ -127,9 +156,17 @@ export default function IntegrationsPage() {
               actions: true,
               render: (s) => (
                 <div className="flex items-center justify-end gap-1">
-                  {s.status === 'active' && s.health === 'expiring' ? (
+                  {s.status === 'active' && isOAuthPlatform(s.platform) && ['needs_auth', 'expired', 'expiring'].includes(s.health) ? (
                     <Button size="sm" className="whitespace-nowrap" onClick={() => reauthorizeStore(s)}>
-                      <Shield size={12} /> Reauthorize
+                      <Shield size={12} /> {s.health === 'needs_auth' ? 'Authorize' : 'Re-authorize'}
+                    </Button>
+                  ) : s.status === 'active' && s.health === 'needs_auth' && !s.sample ? (
+                    <Button size="sm" className="whitespace-nowrap" onClick={() => setEditing(s)}>
+                      <Pencil size={12} /> Add keys
+                    </Button>
+                  ) : isCsvPlatform(s.platform) ? (
+                    <Button size="sm" className="whitespace-nowrap" onClick={() => setImportFor(s)}>
+                      <FileUp size={12} /> Import CSV
                     </Button>
                   ) : (
                     s.status === 'active' && (
@@ -142,17 +179,19 @@ export default function IntegrationsPage() {
                     items={[
                       { label: 'Edit', icon: Pencil, onClick: () => setEditing(s) },
                       { label: 'Client access', icon: Building2, onClick: () => setClientsFor(s) },
-                      { label: 'Reauthorize', icon: Shield, onClick: () => reauthorizeStore(s), hidden: !isOAuthPlatform(s.platform) },
+                      { label: 'Re-authorize', icon: Shield, onClick: () => reauthorizeStore(s), hidden: !isOAuthPlatform(s.platform) || s.sample },
+                      { label: 'Import CSV', icon: FileUp, onClick: () => setImportFor(s), hidden: !isCsvPlatform(s.platform) },
                       { label: 'Pause syncing', icon: Pause, onClick: () => toggleStorePause(s), hidden: s.status === 'paused' },
                       { label: 'Resume syncing', icon: Play, onClick: () => toggleStorePause(s), hidden: s.status !== 'paused' },
                       {
-                        label: 'Delete',
+                        label: 'Disconnect',
                         icon: Trash2,
                         danger: true,
                         onClick: () =>
                           askConfirm({
-                            title: `Delete ${s.name}?`,
-                            body: `This disconnects the store${isOAuthPlatform(s.platform) ? ', revokes the marketplace authorization,' : ''} and removes its synced products, orders and customers from Digital Hub. Nothing is deleted on ${s.platform} itself.`,
+                            title: `Disconnect ${s.name}?`,
+                            body: `This deletes the saved ${isOAuthPlatform(s.platform) ? 'authorization' : 'keys'} and removes the store's synced products, orders and customers from Digital Hub. Nothing is deleted on ${s.platform} itself.`,
+                            confirmLabel: 'Disconnect',
                             onConfirm: () => deleteStore(s),
                           }),
                       },
@@ -167,6 +206,11 @@ export default function IntegrationsPage() {
 
       {editing && <IntegrationModal store={editing} onClose={() => setEditing(null)} />}
       {clientsFor && <StoreClientsModal store={clientsFor} onClose={() => setClientsFor(null)} />}
+      {importFor && (
+        <Modal title={`Import into ${importFor.name}`} subtitle={<StoreBadge store={importFor} api showStore={false} />} size="lg" onClose={() => setImportFor(null)}>
+          <CsvImport store={importFor} />
+        </Modal>
+      )}
     </div>
   );
 }
