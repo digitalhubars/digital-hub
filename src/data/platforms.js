@@ -120,6 +120,18 @@ export const PLATFORMS = {
     connectLabel: 'Authorize with TikTok Shop',
     button: 'bg-gray-950 text-white hover:bg-black dark:bg-white dark:text-gray-950 dark:hover:bg-gray-200',
     scopes: ['Products (read)', 'Orders (read)'],
+    // The store's TikTok Shop app (partner.tiktokshop.com → App & Service → your app).
+    fields: [
+      { key: 'appKey', label: 'App Key', placeholder: 'e.g. 6abc1d2ef3gh4' },
+      { key: 'appSecret', label: 'App Secret', placeholder: 'e.g. 1a2b3c4d5e6f…', secret: true },
+      {
+        key: 'serviceId',
+        label: 'Service ID',
+        placeholder: 'e.g. 7123456789012345678',
+        hint: 'Partner Center → App & Service → your app → Basic information. Set the app’s Redirect URL to this address:',
+        callback: 'tiktok',
+      },
+    ],
     tone: 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300',
     dot: 'bg-rose-600 dark:bg-rose-400',
   },

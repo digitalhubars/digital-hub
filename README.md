@@ -21,7 +21,7 @@ Every platform is one adapter in `src/server/platforms/` with the same interface
 | Etsy | The store's own Keystring + Shared Secret, then Authorize (OAuth with PKCE) | Imported (listings + receipts) |
 | Walmart | Client ID + Client Secret | Imported (items + orders; stock isn't included) |
 | Amazon | OAuth via Seller Central | Imported (Listings Items + Orders; line items for the newest 20 orders per sync) |
-| TikTok Shop | OAuth via Seller Center | Imported (products + orders, signed requests) |
+| TikTok Shop | The store's own App Key + App Secret + Service ID, then Authorize | Imported (products + orders, signed requests) |
 | Mercari | CSV import (no public API) | Orders and listings from CSV files |
 
 - **No duplicates:** rows use the platform's own IDs (`{store}_p{id}`, `{store}_o{id}`, `{store}_c{id}`), so every sync or re-import updates rows in place.
