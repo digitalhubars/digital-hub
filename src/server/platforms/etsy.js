@@ -1,26 +1,24 @@
 import 'server-only';
 import { PlatformError, num, requestJson } from './http';
 
-// Etsy Open API v3 with OAuth 2.0 + PKCE, using each store's own Etsy app:
-// the Keystring and Shared Secret from etsy.com/developers/your-apps, typed in the Add
-// integration window (ETSY_API_KEY / ETSY_SHARED_SECRET are only a fallback).
-// Etsy expects the x-api-key header as "keystring:shared_secret".
-// Callback URL to add on the Etsy app: <app>/api/integrations/callback/etsy
-// Access tokens last 1 hour; refresh tokens 90 days (refreshed automatically).
+// Etsy Open API v3 with OAuth 2.0 + PKCE ("Sign in with Etsy" popup). App keys come only from
+// the server's environment: ETSY_KEYSTRING and ETSY_SHARED_SECRET (Etsy expects the x-api-key
+// header as "keystring:shared_secret"). Callback URL on the Etsy app:
+// <app>/api/integrations/callback/etsy. Access tokens 1 hour; refresh tokens 90 days (automatic).
 
 const API = 'https://api.etsy.com/v3';
 const P = 'Etsy';
 const SCOPES = 'shops_r listings_r transactions_r';
 
-function app(creds = {}) {
-  const keystring = creds.keystring || process.env.ETSY_API_KEY;
-  const sharedSecret = creds.sharedSecret || process.env.ETSY_SHARED_SECRET;
-  if (!keystring) throw new PlatformError('Add the Etsy Keystring and Shared Secret in the store’s settings first.', { auth: true });
+function app() {
+  const keystring = process.env.ETSY_KEYSTRING || process.env.ETSY_API_KEY;
+  const sharedSecret = process.env.ETSY_SHARED_SECRET;
+  if (!keystring) throw new PlatformError('Etsy isn’t set up on the server yet: add ETSY_KEYSTRING and ETSY_SHARED_SECRET.');
   return { keystring, sharedSecret };
 }
 
-const apiKey = (creds) => {
-  const { keystring, sharedSecret } = app(creds);
+const apiKey = () => {
+  const { keystring, sharedSecret } = app();
   return sharedSecret ? `${keystring}:${sharedSecret}` : keystring;
 };
 
@@ -36,7 +34,7 @@ function tokens(data, previous = {}) {
 }
 
 const get = (creds, path, query) =>
-  requestJson(`${API}${path}`, { platform: P, headers: { 'x-api-key': apiKey(creds), Authorization: `Bearer ${creds.accessToken}` }, query }).then((r) => r.data);
+  requestJson(`${API}${path}`, { platform: P, headers: { 'x-api-key': apiKey(), Authorization: `Bearer ${creds.accessToken}` }, query }).then((r) => r.data);
 
 const money = (m) => (m ? num(m.amount) / (num(m.divisor) || 100) : 0);
 
@@ -53,28 +51,23 @@ export default {
   auth: 'oauth',
   pkce: true,
 
-  /** The store's Etsy app keys. Etsy's ping checks them before they're saved. */
-  async connect({ keystring, sharedSecret }) {
-    const keys = { keystring: keystring?.trim(), sharedSecret: sharedSecret?.trim() };
-    if (!keys.keystring || !keys.sharedSecret) throw new PlatformError('Enter the Etsy Keystring and Shared Secret.');
+  requiredEnv: ['ETSY_KEYSTRING|ETSY_API_KEY', 'ETSY_SHARED_SECRET'],
+
+  /** Etsy refuses keys that are still "Pending" review; say so before the seller signs in. */
+  async checkApp() {
     try {
-      await requestJson(`${API}/application/openapi-ping`, { platform: P, headers: { 'x-api-key': apiKey(keys) } });
+      await requestJson(`${API}/application/openapi-ping`, { platform: P, headers: { 'x-api-key': apiKey() } });
     } catch (err) {
-      throw new PlatformError(
-        `Etsy didn’t accept these keys. If the app still shows “Pending” on etsy.com/developers, wait for Etsy to approve it, then try again. (${err.message})`,
-        { auth: true },
-      );
+      throw new PlatformError(`Etsy didn’t accept the app keys. If the app still shows “Pending” on etsy.com/developers, wait for Etsy to approve it. (${err.message})`);
     }
-    // clientId lets the server tell whether the app changed (an existing authorization is kept if not).
-    return { ...keys, clientId: keys.keystring };
   },
 
-  authorizeUrl({ state, redirectUri, codeChallenge, creds }) {
+  authorizeUrl({ state, redirectUri, codeChallenge }) {
     const q = new URLSearchParams({
       response_type: 'code',
       redirect_uri: redirectUri,
       scope: SCOPES,
-      client_id: app(creds).keystring,
+      client_id: app().keystring,
       state,
       code_challenge: codeChallenge,
       code_challenge_method: 'S256',
@@ -82,15 +75,15 @@ export default {
     return `https://www.etsy.com/oauth/connect?${q}`;
   },
 
-  async exchangeCode({ query, redirectUri, codeVerifier, creds = {} }) {
+  async exchangeCode({ query, redirectUri, codeVerifier }) {
     if (!query.code) throw new PlatformError('Etsy didn’t send an authorization code.');
-    const keys = app(creds);
+    const keys = app();
     const { data } = await requestJson(`${API}/public/oauth/token`, {
       platform: P,
       method: 'POST',
       form: { grant_type: 'authorization_code', client_id: keys.keystring, redirect_uri: redirectUri, code: query.code, code_verifier: codeVerifier },
     });
-    const next = tokens(data, { ...creds, ...keys, clientId: keys.keystring });
+    const next = tokens(data);
     const shop = await get(next, `/application/users/${next.userId}/shops`);
     const first = shop?.results ? shop.results[0] : shop;
     if (!first?.shop_id) throw new PlatformError('This Etsy account has no shop.');
@@ -101,13 +94,12 @@ export default {
     const { data } = await requestJson(`${API}/public/oauth/token`, {
       platform: P,
       method: 'POST',
-      form: { grant_type: 'refresh_token', client_id: app(creds).keystring, refresh_token: creds.refreshToken },
+      form: { grant_type: 'refresh_token', client_id: app().keystring, refresh_token: creds.refreshToken },
     });
     return tokens(data, creds);
   },
 
   async test({ creds }) {
-    if (!creds.accessToken) return { ok: true, message: 'Etsy accepted the keys. Click Authorize to let Digital Hub read this shop.' };
     const shop = await get(creds, `/application/shops/${creds.shopId}`);
     return { ok: true, message: `Connected to ${shop.shop_name} (${shop.listing_active_count} active listings).`, account: shop.shop_name };
   },
@@ -162,6 +154,16 @@ export default {
       total: money(r.grandtotal),
       currency: r.grandtotal?.currency_code || 'USD',
       status: orderStatus(r),
+      refunded: (r.refunds || []).reduce((sum, x) => sum + money(x.amount), 0),
+      shippingInfo: (() => {
+        const s = (r.shipments || [])[0];
+        return {
+          status: r.is_shipped || s ? 'shipped' : 'awaiting',
+          carrier: s?.carrier_name || null,
+          tracking: s?.tracking_code || null,
+          shippedAt: s?.shipment_notification_timestamp ? num(s.shipment_notification_timestamp) * 1000 : null,
+        };
+      })(),
       placedAt: num(r.create_timestamp) * 1000,
       updatedAt: num(r.updated_timestamp) * 1000,
       customer: { externalId: r.buyer_user_id ? String(r.buyer_user_id) : null, name: r.name || r.buyer_email || 'Etsy buyer', email: r.buyer_email || '' },

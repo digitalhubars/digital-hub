@@ -35,7 +35,7 @@ export function must({ data, error }) {
   if (error && SCHEMA_MISSING.has(error.code)) {
     throw new HttpError(
       500,
-      'The database needs an update: open Supabase → SQL Editor and run the newest file in supabase/migrations (20261023000000_marketplace_integrations.sql).',
+      'The database needs an update: open Supabase → SQL Editor and run the files in supabase/migrations that haven’t been run yet (oldest first).',
     );
   }
   if (error) throw new Error(error.message);

@@ -2,23 +2,34 @@
 // src/server/platforms/<platform>.js (one adapter per platform).
 //
 // auth: 'key'   → API fields typed into the modal (`fields`), checked and saved encrypted by the server
-//       'oauth' → "Authorize" sends the admin to the platform's sign-in, which redirects back
+//       'oauth' → "Sign in with …" opens the platform's official sign-in in a pop-up
+//                 (app keys live only in the server's environment variables)
 //       'csv'   → no API; orders and listings are imported from CSV files
+// live: 'webhooks' → changes arrive in real time; otherwise the background sync (every 15 minutes)
 
 export const PLATFORMS = {
   Shopify: {
+    slug: 'shopify',
     api: 'Shopify Admin API',
-    auth: 'key',
+    auth: 'oauth',
     idLabel: 'Product ID',
-    address: 'domain',
-    fields: [
+    account: 'Shop',
+    portal: 'Shopify',
+    connectLabel: 'Sign in with Shopify',
+    button: 'bg-[#008060] text-white hover:bg-[#006e52]',
+    live: 'webhooks',
+    scopes: ['Products & inventory (read)', 'Orders, fulfillments & refunds (read)', 'Customers (read)'],
+    // "Sign in with Shopify" asks only for the store's address; the app keys are on the server.
+    fields: [{ key: 'domain', label: 'Store domain', placeholder: 'your-store.myshopify.com', hint: 'You’ll approve access in Shopify in a pop-up window.' }],
+    // Alternative: an Admin API access token from an existing custom app (no live updates).
+    tokenFields: [
       { key: 'domain', label: 'Store domain', placeholder: 'your-store.myshopify.com' },
       {
         key: 'token',
         label: 'Admin API access token',
         placeholder: 'shpat_…',
         secret: true,
-        hint: 'Shopify admin → Settings → Apps and sales channels → Develop apps → your app. Scopes: read_products, read_orders, read_customers, read_inventory.',
+        hint: 'Shopify admin → Settings → Apps → Develop apps → your app → API credentials. Scopes: read_products, read_inventory, read_orders, read_fulfillments, read_customers.',
       },
     ],
     tone: 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300',
@@ -29,10 +40,12 @@ export const PLATFORMS = {
     auth: 'key',
     idLabel: 'Product ID',
     twoWay: true,
+    live: 'webhooks',
     tone: 'border-violet-200 bg-violet-50 text-violet-800 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-300',
     dot: 'bg-violet-600 dark:bg-violet-400',
   },
   Amazon: {
+    slug: 'amazon',
     api: 'Amazon SP-API',
     auth: 'oauth',
     idLabel: 'SKU',
@@ -46,52 +59,30 @@ export const PLATFORMS = {
     dot: 'bg-amber-500 dark:bg-amber-400',
   },
   eBay: {
+    slug: 'ebay',
     api: 'eBay Trading + Sell APIs',
     auth: 'oauth',
     twoWay: true,
     idLabel: 'Item ID',
     account: 'eBay user',
     portal: 'eBay',
-    connectLabel: 'Authorize with eBay',
+    connectLabel: 'Sign in with eBay',
     button: 'bg-[#0064D2] text-white hover:bg-[#0057B8]',
     regions: ['United States', 'United Kingdom', 'Germany', 'Australia'],
     scopes: ['Listings: read, edit price/quantity/title, end', 'Orders: read, mark shipped', 'Account name'],
-    // The store's own eBay developer app (developer.ebay.com → Application Keys, Production).
-    fields: [
-      { key: 'clientId', label: 'Client ID (App ID)', placeholder: 'YourName-AppName-PRD-…' },
-      { key: 'clientSecret', label: 'Client Secret (Cert ID)', placeholder: 'PRD-…', secret: true },
-      {
-        key: 'ruName',
-        label: 'RuName (eBay Redirect URL name)',
-        placeholder: 'Your_Name-YourName-AppNam-abcdefg',
-        hint: 'developer.ebay.com → User Tokens → “Get a Token from eBay via Your Application” → your RuName. Set its “Your auth accepted URL” to the address below.',
-        callback: 'ebay',
-      },
-    ],
     tone: 'border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300',
     dot: 'bg-sky-600 dark:bg-sky-400',
   },
   Etsy: {
+    slug: 'etsy',
     api: 'Etsy Open API v3',
     auth: 'oauth',
     idLabel: 'Listing ID',
     account: 'Shop',
     portal: 'Etsy',
-    connectLabel: 'Authorize with Etsy',
+    connectLabel: 'Sign in with Etsy',
     button: 'bg-[#F1641E] text-white hover:bg-[#D9561A]',
     scopes: ['Shop (read)', 'Listings (read)', 'Orders (read)'],
-    // The store's Etsy app (etsy.com/developers/your-apps). The key must be approved (not "Pending").
-    fields: [
-      { key: 'keystring', label: 'Keystring', placeholder: 'e.g. 1aa2bb33c44d55eeeeee6fff' },
-      {
-        key: 'sharedSecret',
-        label: 'Shared Secret',
-        placeholder: 'e.g. 7aaa8bbb9c',
-        secret: true,
-        hint: 'etsy.com/developers/your-apps → your app → See API Key Details. Also add this address under the app’s Callback URLs:',
-        callback: 'etsy',
-      },
-    ],
     tone: 'border-orange-200 bg-orange-50 text-orange-800 dark:border-orange-500/30 dark:bg-orange-500/10 dark:text-orange-300',
     dot: 'bg-orange-500 dark:bg-orange-400',
   },
@@ -112,26 +103,16 @@ export const PLATFORMS = {
     dot: 'bg-blue-600 dark:bg-blue-400',
   },
   'TikTok Shop': {
+    slug: 'tiktok',
     api: 'TikTok Shop Partner API',
     auth: 'oauth',
     idLabel: 'Product ID',
     account: 'Shop',
     portal: 'TikTok Shop Seller Center',
-    connectLabel: 'Authorize with TikTok Shop',
+    connectLabel: 'Connect TikTok Shop',
+    live: 'webhooks',
     button: 'bg-gray-950 text-white hover:bg-black dark:bg-white dark:text-gray-950 dark:hover:bg-gray-200',
     scopes: ['Products (read)', 'Orders (read)'],
-    // The store's TikTok Shop app (partner.tiktokshop.com → App & Service → your app).
-    fields: [
-      { key: 'appKey', label: 'App Key', placeholder: 'e.g. 6abc1d2ef3gh4' },
-      { key: 'appSecret', label: 'App Secret', placeholder: 'e.g. 1a2b3c4d5e6f…', secret: true },
-      {
-        key: 'serviceId',
-        label: 'Service ID',
-        placeholder: 'e.g. 7123456789012345678',
-        hint: 'Partner Center → App & Service → your app → Basic information. Set the app’s Redirect URL to this address:',
-        callback: 'tiktok',
-      },
-    ],
     tone: 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300',
     dot: 'bg-rose-600 dark:bg-rose-400',
   },

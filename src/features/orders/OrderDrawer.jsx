@@ -98,7 +98,57 @@ export default function OrderDrawer({ order, onClose }) {
           <dt>Total</dt>
           <dd className="tabular-nums">{money(order.total)}</dd>
         </div>
+        {order.refunded > 0 && (
+          <>
+            <div className="flex justify-between text-red-700 dark:text-red-400">
+              <dt>Refunded</dt>
+              <dd className="tabular-nums">−{money(order.refunded)}</dd>
+            </div>
+            <div className={`flex justify-between font-medium ${ui.h}`}>
+              <dt>Net</dt>
+              <dd className="tabular-nums">{money(order.total - order.refunded)}</dd>
+            </div>
+          </>
+        )}
       </dl>
+
+      {order.shippingInfo?.status && (
+        <>
+          <h4 className={`mb-2 mt-6 text-xs font-medium uppercase tracking-wide ${ui.muted}`}>Shipping</h4>
+          <dl className="grid grid-cols-2 gap-3 rounded-lg border border-gray-200 p-3 text-sm dark:border-gray-800">
+            <div>
+              <dt className={ui.muted}>Status</dt>
+              <dd className={`mt-0.5 ${ui.h}`}>{order.shippingInfo.status === 'shipped' ? 'Shipped' : 'Awaiting shipment'}</dd>
+            </div>
+            {order.shippingInfo.shippedAt && (
+              <div>
+                <dt className={ui.muted}>Shipped</dt>
+                <dd className={`mt-0.5 ${ui.h}`}>{formatDateTime(order.shippingInfo.shippedAt)}</dd>
+              </div>
+            )}
+            {order.shippingInfo.carrier && (
+              <div>
+                <dt className={ui.muted}>Carrier / method</dt>
+                <dd className={`mt-0.5 ${ui.h}`}>{order.shippingInfo.carrier}</dd>
+              </div>
+            )}
+            {order.shippingInfo.tracking && (
+              <div className="col-span-2">
+                <dt className={ui.muted}>Tracking</dt>
+                <dd className="mt-0.5 break-all font-mono text-xs">
+                  {order.shippingInfo.trackingUrl ? (
+                    <a href={order.shippingInfo.trackingUrl} target="_blank" rel="noreferrer" className="text-teal-700 hover:underline dark:text-teal-300">
+                      {order.shippingInfo.tracking}
+                    </a>
+                  ) : (
+                    <span className={ui.h}>{order.shippingInfo.tracking}</span>
+                  )}
+                </dd>
+              </div>
+            )}
+          </dl>
+        </>
+      )}
 
       {!access.editOrders && (
         <div className="mt-6">

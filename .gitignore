@@ -14,3 +14,4 @@ dist
 supabase/.temp
 supabase/.branches
 .next-check
+.next-test

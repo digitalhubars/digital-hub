@@ -122,19 +122,42 @@ export const expiringSoon = (creds) => !!creds?.refreshExpiresAt && creds.refres
 
 const b64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
-export async function createOAuthState({ storeId, platform, uid, pkce }) {
+/**
+ * Starts a sign-in attempt. storeId = re-authorizing an existing store, or null for a new
+ * store, which is created only once the seller has approved (meta holds its name, group,
+ * Shopify domain, …). Valid for 15 minutes, used once.
+ */
+export async function createOAuthState({ storeId = null, platform, uid, pkce, meta = {} }) {
   const state = b64url(randomBytes(24));
   const codeVerifier = pkce ? b64url(randomBytes(48)) : null;
   must(
     await db()
       .from('oauth_states')
-      .insert({ state, store_id: storeId, platform, created_by: uid, code_verifier: codeVerifier ? encrypt(codeVerifier) : null, expires_at: new Date(Date.now() + 15 * 60000).toISOString() }),
+      .insert({
+        state,
+        store_id: storeId,
+        platform,
+        created_by: uid,
+        code_verifier: codeVerifier ? encrypt(codeVerifier) : null,
+        meta,
+        expires_at: new Date(Date.now() + 15 * 60000).toISOString(),
+      }),
   );
-  const codeChallenge = codeVerifier ? b64url(createHash('sha256').update(codeVerifier).digest()) : null;
-  return { state, codeChallenge };
+  return { state };
 }
 
-/** One-time use: returns the saved state (or null) and deletes it. */
+const challengeOf = (verifier) => (verifier ? b64url(createHash('sha256').update(verifier).digest()) : null);
+
+/** Looks up an unused, unexpired state without using it up (the /connect redirect). */
+export async function peekOAuthState(state, platform) {
+  if (!state) return null;
+  const row = must(await db().from('oauth_states').select('*').eq('state', state).maybeSingle());
+  if (!row || row.platform !== platform || Date.parse(row.expires_at) < Date.now()) return null;
+  const codeVerifier = decrypt(row.code_verifier);
+  return { ...row, meta: row.meta || {}, code_verifier: codeVerifier, code_challenge: challengeOf(codeVerifier) };
+}
+
+/** One-time use (the callback): returns the saved state (or null) and deletes it. */
 export async function consumeOAuthState(state, platform) {
   if (!state) return null;
   const row = must(await db().from('oauth_states').select('*').eq('state', state).maybeSingle());
@@ -143,5 +166,5 @@ export async function consumeOAuthState(state, platform) {
   // Clean up abandoned attempts while we're here.
   await db().from('oauth_states').delete().lt('expires_at', new Date().toISOString());
   if (row.platform !== platform || Date.parse(row.expires_at) < Date.now()) return null;
-  return { ...row, code_verifier: decrypt(row.code_verifier) };
+  return { ...row, meta: row.meta || {}, code_verifier: decrypt(row.code_verifier) };
 }

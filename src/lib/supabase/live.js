@@ -93,6 +93,7 @@ export function useLiveList(table, { enabled = true, order, limit, sort, softDel
   const [list, setListState] = useState([]);
   const [loading, setLoading] = useState(true);
   const listRef = useRef([]);
+  const queryRef = useRef({ order, limit });
   const optionsRef = useRef({ sort, softDelete, onError, limit });
   optionsRef.current = { sort, softDelete, onError, limit };
 
@@ -161,7 +162,14 @@ export function useLiveList(table, { enabled = true, order, limit, sort, softDel
     [table],
   );
 
-  return [list, setList, loading];
+  /** Fetches the list again (Realtime keeps it current; this is for "refresh now"). */
+  const reload = useCallback(async () => {
+    if (!enabled) return;
+    const rows = await fetchAll(table, queryRef.current).catch(() => null);
+    if (rows) publish(rows);
+  }, [table, enabled, publish]);
+
+  return [list, setList, loading, reload];
 }
 
 // The workspace settings (one row, a JSON object). update(patch) merges.

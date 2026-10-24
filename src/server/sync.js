@@ -1,7 +1,8 @@
 import 'server-only';
 import { randomBytes } from 'node:crypto';
+import { waitUntil } from '@vercel/functions';
 import { fromRow, toRow } from '../lib/db/schema';
-import { authorizedCredentials, credentialsFrom, expiringSoon, loadSecretsRow, saveWooSecrets } from './credentials';
+import { authorizedCredentials, credentialsFrom, expiringSoon, loadSecretsRow, saveCredentials, saveWooSecrets } from './credentials';
 import { decrypt } from './crypto';
 import {
   customerDocId,
@@ -16,7 +17,7 @@ import {
   productToWoo,
   CRM_TO_WOO,
 } from './mappers';
-import { getAdapter } from './platforms';
+import { callbackSlug, getAdapter } from './platforms';
 import { adminDb, must } from './supabase';
 import { WooError, wooFetch } from './woo';
 
@@ -46,15 +47,29 @@ export async function getRecord(table, id) {
   return row ? fromRow(table, row) : null;
 }
 
+// Columns added by later migrations. If a migration hasn't been run yet, writes retry
+// without them, so syncing keeps working (minus the new details) until it is.
+const NEWER_COLUMNS = ['refunded', 'shipping_info', 'auth_expires_at'];
+const withoutNewer = (row) => Object.fromEntries(Object.entries(row).filter(([k]) => !NEWER_COLUMNS.includes(k)));
+let warnedMissing = false;
+
+async function write(run, rows) {
+  const first = await run(rows);
+  if (first.error?.code !== 'PGRST204') return must(first);
+  if (!warnedMissing) console.warn('A newer migration hasn’t been run yet; saving without its columns.', first.error.message);
+  warnedMissing = true;
+  return must(await run(Array.isArray(rows) ? rows.map(withoutNewer) : withoutNewer(rows)));
+}
+
 /** Inserts or merges records (only the fields each record has). */
 export async function upsert(table, records) {
   for (let i = 0; i < records.length; i += 500) {
     const rows = records.slice(i, i + 500).map((r) => toRow(table, r));
-    must(await db().from(table).upsert(rows, { onConflict: 'id', defaultToNull: false }));
+    await write((r) => db().from(table).upsert(r, { onConflict: 'id', defaultToNull: false }), rows);
   }
 }
 
-export const patch = async (table, id, fields) => must(await db().from(table).update(toRow(table, fields)).eq('id', id));
+export const patch = (table, id, fields) => write((r) => db().from(table).update(r).eq('id', id), toRow(table, fields));
 export const remove = async (table, ids) => must(await db().from(table).delete().in('id', [].concat(ids)));
 
 /** The store, its secrets row (webhook secret decrypted) and its decrypted credentials. */
@@ -375,6 +390,20 @@ export async function removeWebhooks(creds, ids = []) {
   }
 }
 
+// Real-time updates for adapters that support them (Shopify). A failure here never fails the sync.
+async function registerAdapterWebhooks(store, adapter, creds, origin) {
+  if (isLocal(origin)) return { note: 'Live updates are switched on after deploying.', live: 'local' };
+  try {
+    const url = `${origin}/api/webhooks/${callbackSlug(store.platform)}?store=${encodeURIComponent(store.id)}`;
+    const result = await adapter.registerWebhooks({ store, creds }, { url });
+    if (result.creds) await saveCredentials(store, { ...creds, ...result.creds });
+    return { note: result.note || null, live: result.note ? 'polling' : 'active' };
+  } catch (err) {
+    console.warn('webhook setup failed', store.id, err.message);
+    return { note: `Live updates couldn’t be switched on (${err.message}). Changes arrive on each scheduled sync.`, live: 'polling' };
+  }
+}
+
 // ---- Full sync used by "Sync now", new connections and the schedule ----------------------
 
 export async function syncStoreNow(storeId, { incremental = false, origin = '' } = {}) {
@@ -402,16 +431,20 @@ export async function syncStoreNow(storeId, { incremental = false, origin = '' }
     const counts = await writeRecords(storeId, { products, orders, customers });
 
     let note = null;
+    let live = null;
     if (store.platform === 'WooCommerce') {
       const { secrets } = await loadStore(storeId);
       note = await ensureWebhooks(storeId, creds, secrets, origin);
+      live = isLocal(origin) ? 'local' : 'active';
+    } else if (adapter.registerWebhooks) {
+      ({ note, live } = await registerAdapterWebhooks(store, adapter, creds, origin));
     }
     await setStoreHealth(storeId, {
       health: expiringSoon(creds) ? 'expiring' : 'connected',
       lastError: null,
       lastSync: startedAt,
       ...(incremental ? {} : { counts }),
-      ...(store.platform === 'WooCommerce' ? { webhooks: isLocal(origin) ? 'local' : 'active' } : {}),
+      ...(live ? { webhooks: live } : {}),
     });
     return { ok: true, counts, message: note };
   } catch (err) {
@@ -422,4 +455,22 @@ export async function syncStoreNow(storeId, { incremental = false, origin = '' }
     await setStoreHealth(storeId, { health, lastError: err.message });
     return { ok: false, message: err.message };
   }
+}
+
+// ---- Webhook-triggered syncs ------------------------------------------------------------
+
+const recentlyQueued = new Map(); // storeId → ms, per server instance
+
+/**
+ * Answers a platform's webhook straight away and syncs the store's recent changes in the
+ * background (platforms give a webhook only a few seconds). Bursts of events for the same
+ * store within 20 seconds share one sync.
+ */
+export function queueStoreSync(storeId, origin) {
+  const last = recentlyQueued.get(storeId) || 0;
+  if (Date.now() - last < 20000) return false;
+  recentlyQueued.set(storeId, Date.now());
+  const run = syncStoreNow(storeId, { incremental: true, origin }).catch((err) => console.error('webhook sync failed', storeId, err.message));
+  waitUntil(run);
+  return true;
 }

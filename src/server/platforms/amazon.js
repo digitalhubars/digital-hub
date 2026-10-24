@@ -34,6 +34,7 @@ const STATUS = { Shipped: 'fulfilled', Canceled: 'cancelled', Unfulfillable: 'ca
 export default {
   platform: P,
   auth: 'oauth',
+  requiredEnv: ['AMAZON_SP_APP_ID', 'AMAZON_LWA_CLIENT_ID', 'AMAZON_LWA_CLIENT_SECRET'],
 
   authorizeUrl({ state, redirectUri, store }) {
     const q = new URLSearchParams({ application_id: env('AMAZON_SP_APP_ID', P), state, redirect_uri: redirectUri });

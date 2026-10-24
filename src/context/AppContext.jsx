@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { defaultSettings, isOAuthPlatform, PLATFORMS, sessions as initialSessions } from '../data';
 import { isCsvPlatform } from '../data/platforms';
+import { openOAuthPopup } from '../features/integrations/oauthPopup';
 import { canVisitPage, routePath, settingsTabsFor } from '../config/navigation';
 import { getAccess } from '../config/roles';
 import { signOut as authSignOut, updateOwnProfile, authMessage } from '../lib/auth';
@@ -72,7 +73,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
 
   const [groupRows, setGroups, groupsLoading] = useLiveList('groups', live);
   const [clients, setClients] = useLiveList('clients', { ...live, enabled: isAdmin || (realRole === 'client' && !!profile.client_id) });
-  const [stores, setStores] = useLiveList('stores', live);
+  const [stores, setStores, , reloadStores] = useLiveList('stores', live);
   const [products, setProducts] = useLiveList('products', {
     ...live,
     sort: (a, b) => (a.title || '').localeCompare(b.title || ''),
@@ -416,16 +417,50 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
     }
   };
 
-  /** Authorize / Re-authorize: sends the admin to the marketplace's sign-in, which redirects back. */
-  const authorizeStore = async (store) => {
-    showToast({ pending: true, title: `Opening ${store.platform}…`, body: 'Sign in and approve access, then you’ll come back here.' });
-    try {
-      const { url } = await callApi('integrations/authorize', { storeId: store.id });
-      window.location.assign(url);
-    } catch (err) {
-      showToast({ tone: 'danger', title: `Couldn’t start ${store.platform} authorization`, body: callError(err) });
+  const reportSignIn = (platform, result) => {
+    if (result.status === 'connected') {
+      showToast({ title: `${platform} connected`, body: result.message || 'Importing products and orders now.' });
+      reloadStores();
+    } else if (result.status === 'closed') {
+      showToast({ title: 'Sign-in window closed', body: `${platform} wasn’t connected. If you did finish signing in, the store appears here in a moment.` });
+    } else if (result.status !== 'blocked') {
+      showToast({ tone: 'danger', title: `${platform} isn’t connected`, body: result.message || 'The sign-in didn’t finish. Try again.' });
     }
   };
+
+  /**
+   * "Sign in with …" in a pop-up (src/features/integrations/oauthPopup.js). Must be called
+   * straight from a click, before anything async, so the pop-up isn't blocked.
+   * storeId → re-authorize that store; otherwise a new store is created once the seller
+   * approves (meta: name, groupId, region, syncFrequency, status, clientId).
+   * prepare: async work to do first (e.g. saving the store's other edits).
+   * Resolves with { status: 'connected' | 'error' | 'closed' | 'blocked', message, storeId }.
+   */
+  const connectStore = ({ platform, storeId, shop, meta = {}, prepare } = {}) => {
+    const slug = PLATFORMS[platform]?.slug;
+    const popup = slug && openOAuthPopup(slug, { onLate: (result) => reportSignIn(platform, result) });
+    if (!popup) {
+      showToast({ tone: 'danger', title: 'Pop-up blocked', body: `Allow pop-ups for this site, then click Sign in with ${platform} again.` });
+      return Promise.resolve({ status: 'blocked' });
+    }
+    showToast({ pending: true, title: `Signing in to ${platform}…`, body: 'Finish in the pop-up window.' });
+    (async () => {
+      try {
+        if (prepare) await prepare();
+        const { connectUrl } = await callApi('integrations/authorize', { platform, storeId, shop, ...meta });
+        popup.go(connectUrl);
+      } catch (err) {
+        popup.fail(callError(err));
+      }
+    })();
+    return popup.result.then((result) => {
+      reportSignIn(platform, result);
+      return result;
+    });
+  };
+
+  /** Authorize / Re-authorize an existing store (pop-up). */
+  const authorizeStore = (store) => connectStore({ platform: store.platform, storeId: store.id });
 
   /** CSV import for stores without an API (Mercari). kind: 'orders' | 'listings'. */
   const importStoreCsv = async (store, kind, file) => {
@@ -494,6 +529,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
 
     // Typed keys (Shopify, Walmart, or an eBay store's own app keys) are checked and saved by the server.
     let mustAuthorize = authorize;
+    let connectedNow = false;
     if (!isWoo && credentials) {
       const result = await callApi('integrations/credentials', { storeId: id, input: credentials }).catch((err) => ({ ok: false, message: callError(err) }));
       if (!result.ok) {
@@ -503,12 +539,15 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
       }
       // New app keys need the seller to approve access again.
       if (auth === 'oauth' && !result.authorized) mustAuthorize = true;
+      // A ready-made token (Shopify Admin API token) connects without the sign-in step.
+      if (auth === 'oauth' && result.authorized && !authorize) connectedNow = true;
     }
 
     log(`${isNew ? 'Connected' : 'Updated'} ${record.platform} store ${record.name}`, 'integration');
     if (auth === 'oauth' && mustAuthorize) {
-      authorizeStore(record);
-    } else if (auth === 'key' && (isNew || credentials || urlChanged || !samePlatform) && record.status === 'active') {
+      // Sign-in happens in a pop-up opened by the caller (see connectStore).
+      showToast({ title: `${record.name} saved`, body: `Click Sign in to connect it to ${record.platform}.` });
+    } else if (((auth === 'key' && (isNew || credentials || urlChanged || !samePlatform)) || connectedNow) && record.status === 'active') {
       resyncStore(record);
     } else {
       showToast({
@@ -737,7 +776,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
     confirmDialog, askConfirm, closeConfirm, drawer, openDrawer, closeDrawer,
     // actions
     saveProduct, deleteProduct, updateOrderStatus,
-    resyncStore, testConnection, saveStore, authorizeStore, reauthorizeStore: authorizeStore, importStoreCsv, setStoreClients, toggleStorePause, deleteStore,
+    resyncStore, testConnection, saveStore, connectStore, authorizeStore, reauthorizeStore: authorizeStore, reloadStores, importStoreCsv, setStoreClients, toggleStorePause, deleteStore,
     saveClient, deleteClient, setClientStatus, resendInvite, viewAsClient,
     saveGroup, deleteGroup, updateSettings, updateProfile, saveClientAccess, saveManagerGroup,
     exportBackup, importBackup, hasSampleData, loadSampleData, removeSampleData,

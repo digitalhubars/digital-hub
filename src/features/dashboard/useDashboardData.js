@@ -24,6 +24,7 @@ export function orderSummary(orders, period, now = Date.now()) {
     // null when there's nothing to compare with (all time, or no sales last period)
     change: previous ? Math.round(((sales - previous) / previous) * 100) : null,
     waitingToShip: inPeriod.filter((o) => o.status === 'unfulfilled').length,
+    refunds: inPeriod.reduce((sum, o) => sum + (Number(o.refunded) || 0), 0),
   };
 }
 

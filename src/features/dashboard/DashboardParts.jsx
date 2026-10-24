@@ -1,4 +1,4 @@
-import { Building2, DollarSign, FileDown, Receipt, TriangleAlert } from 'lucide-react';
+import { Building2, DollarSign, FileDown, Radio, Receipt, TriangleAlert } from 'lucide-react';
 import Button from '../../components/ui/Button';
 import { Card, StatCard } from '../../components/ui/Card';
 import DataTable from '../../components/ui/DataTable';
@@ -12,6 +12,50 @@ import { orderColumns } from '../orders/orderColumns';
 import SalesChart from './SalesChart';
 
 // Pieces every dashboard uses.
+
+/** Orders, sales, refunds and shipping per platform for the chosen period (all stores in one place). */
+export function ChannelsCard({ data }) {
+  const { storeOf, money } = useApp();
+  const rows = new Map();
+  data.inPeriod.forEach((o) => {
+    const platform = storeOf(o.storeId)?.platform || 'Other';
+    const row = rows.get(platform) || { platform, orders: 0, sales: 0, refunds: 0, toShip: 0 };
+    const counted = o.status !== 'refunded' && o.status !== 'cancelled';
+    if (counted) {
+      row.orders += 1;
+      row.sales += Number(o.total) || 0;
+    }
+    row.refunds += Number(o.refunded) || 0;
+    if (counted && o.status === 'unfulfilled') row.toShip += 1;
+    rows.set(platform, row);
+  });
+  const list = [...rows.values()].sort((a, b) => b.sales - a.sales);
+  const live = data.visibleStores.filter((s) => s.webhooks === 'active' && s.status === 'active').length;
+
+  return (
+    <Card
+      title="Sales by channel"
+      className="xl:col-span-2"
+      action={
+        <span className={`flex items-center gap-1 text-xs ${ui.muted}`}>
+          <Radio size={12} /> {live} of {data.visibleStores.length} stores live · {data.periodName}
+        </span>
+      }
+    >
+      <DataTable
+        rows={list.map((r) => ({ ...r, id: r.platform }))}
+        empty={`No orders ${data.period === 'all' ? 'yet' : data.periodName.toLowerCase()}.`}
+        columns={[
+          { key: 'platform', label: 'Channel', primary: true, render: (r) => <span className={`font-medium ${ui.h}`}>{r.platform}</span> },
+          { key: 'orders', label: 'Orders', align: 'right', render: (r) => <span className="tabular-nums">{r.orders}</span> },
+          { key: 'sales', label: 'Sales', align: 'right', render: (r) => <span className="tabular-nums">{money(r.sales)}</span> },
+          { key: 'refunds', label: 'Refunds', align: 'right', render: (r) => <span className="tabular-nums">{r.refunds ? `−${money(r.refunds)}` : '—'}</span> },
+          { key: 'toShip', label: 'To ship', align: 'right', render: (r) => <span className="tabular-nums">{r.toShip}</span> },
+        ]}
+      />
+    </Card>
+  );
+}
 
 const changeHint = (data) =>
   data.change == null ? (data.range.compareLabel ? `Nothing to compare with ${data.range.compareLabel}` : 'Every order so far') : `${data.change >= 0 ? '+' : ''}${data.change}% vs ${data.range.compareLabel}`;
@@ -80,6 +124,15 @@ export function DashboardActions({ data, title, stats }) {
       filename: 'dashboard',
       stats,
       sections: [
+        {
+          heading: 'Sales by channel',
+          columns: ['Channel', 'Orders', 'Sales', 'Refunds'],
+          rows: [...new Set(data.inPeriod.map((o) => storeOf(o.storeId)?.platform || 'Other'))].map((p) => {
+            const list = data.inPeriod.filter((o) => (storeOf(o.storeId)?.platform || 'Other') === p);
+            const counted = list.filter((o) => o.status !== 'refunded' && o.status !== 'cancelled');
+            return [p, String(counted.length), money(counted.reduce((s, o) => s + (Number(o.total) || 0), 0)), money(list.reduce((s, o) => s + (Number(o.refunded) || 0), 0))];
+          }),
+        },
         {
           heading: `Orders (${data.inPeriod.length})`,
           columns: ['Order', 'Date', 'Customer', 'Store', 'Status', 'Total'],

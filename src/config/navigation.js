@@ -41,7 +41,7 @@ export const SETTINGS_TABS = [
   { key: 'clients', label: 'Clients & access', icon: Building2, roles: ['admin'] },
   { key: 'groups', label: 'Store groups', icon: Layers, roles: ['admin'] },
   { key: 'sync', label: 'Syncing', icon: RefreshCw, roles: ['admin'] },
-  { key: 'api', label: 'Webhooks', icon: Webhook, roles: ['admin'] },
+  { key: 'api', label: 'Live updates', icon: Webhook, roles: ['admin'] },
   { key: 'data', label: 'Data management', icon: Database, roles: ['admin'] },
   { key: 'access', label: 'My access', icon: Store, roles: ['manager', 'client'] },
   { key: 'notifications', label: 'Notifications', icon: BellRing, roles: ALL_ROLES },

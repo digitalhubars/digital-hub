@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Building2, CircleCheck, FileUp, Pause, Pencil, Play, Plug, Plus, RefreshCw, Shield, Trash2, TriangleAlert } from 'lucide-react';
+import { Building2, CircleCheck, FileUp, Lock, Pause, Pencil, Play, Plug, Plus, Radio, RefreshCw, Shield, Trash2, TriangleAlert } from 'lucide-react';
 import ActionMenu from '../../components/ui/ActionMenu';
 import { Badge, StoreBadge } from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
@@ -8,7 +8,7 @@ import DataTable from '../../components/ui/DataTable';
 import PageHeader from '../../components/ui/PageHeader';
 import Select from '../../components/ui/Select';
 import { useApp } from '../../context/AppContext';
-import { isCsvPlatform, isOAuthPlatform, PLATFORM_NAMES } from '../../data/platforms';
+import { isCsvPlatform, isOAuthPlatform, PLATFORM_NAMES, PLATFORMS } from '../../data/platforms';
 import { timeAgo } from '../../lib/format';
 import { ui } from '../../styles/ui';
 import { storeAddress } from '../clients/StorePicker';
@@ -16,6 +16,112 @@ import Modal from '../../components/ui/Modal';
 import CsvImport from './CsvImport';
 import IntegrationModal from './IntegrationModal';
 import StoreClientsModal from './StoreClientsModal';
+
+// The big "Connect a store" buttons. Each opens the Add integration window for that platform.
+const FEATURED = ['TikTok Shop', 'Shopify', 'Etsy', 'eBay'];
+
+const SHOPIFY_DOMAIN = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/;
+
+/**
+ * "Connect a store": each button opens the platform's official sign-in in a pop-up (no keys
+ * to paste; the app's keys are on the server). Shopify first asks which store to connect.
+ */
+function ConnectPanel({ stores, onMore }) {
+  const { connectStore } = useApp();
+  const [shopifyOpen, setShopifyOpen] = useState(false);
+  const [shop, setShop] = useState('');
+  const [shopError, setShopError] = useState('');
+  const [busy, setBusy] = useState('');
+
+  const start = (platform, extra = {}) => {
+    setBusy(platform);
+    connectStore({ platform, ...extra }).then((result) => {
+      setBusy('');
+      if (result.status === 'connected' && platform === 'Shopify') {
+        setShopifyOpen(false);
+        setShop('');
+      }
+    });
+  };
+
+  const continueShopify = (e) => {
+    e.preventDefault();
+    const domain = shop.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    const full = domain.includes('.') ? domain : `${domain}.myshopify.com`;
+    if (!SHOPIFY_DOMAIN.test(full)) return setShopError('Enter the store’s myshopify.com address, e.g. your-store.myshopify.com.');
+    setShopError('');
+    return start('Shopify', { shop: full });
+  };
+
+  return (
+    <Card
+      title="Connect a store"
+      action={
+        <span className={`flex items-center gap-1 text-xs ${ui.muted}`}>
+          <Lock size={12} /> Official sign-in · nothing to paste · tokens stored encrypted
+        </span>
+      }
+    >
+      <div className="grid gap-3 p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-4">
+        {FEATURED.map((name) => {
+          const p = PLATFORMS[name];
+          const count = stores.filter((s) => s.platform === name && !s.sample).length;
+          const isShopify = name === 'Shopify';
+          return (
+            <div key={name} className="flex flex-col rounded-lg border border-gray-200 p-4 dark:border-gray-800">
+              <div className="flex items-center justify-between gap-2">
+                <StoreBadge store={{ platform: name, name: '' }} showStore={false} />
+                {count > 0 && <span className={`text-xs ${ui.muted}`}>{count} connected</span>}
+              </div>
+              <p className={`mt-3 flex-1 text-xs ${ui.muted}`}>
+                {p.scopes?.join(' · ')}. {p.live === 'webhooks' ? 'Live updates as they happen.' : 'Synced automatically every 15 minutes.'}
+              </p>
+              {isShopify && shopifyOpen ? (
+                <form onSubmit={continueShopify} className="mt-3 space-y-2">
+                  <input
+                    autoFocus
+                    className={ui.input}
+                    value={shop}
+                    onChange={(e) => setShop(e.target.value)}
+                    placeholder="your-store.myshopify.com"
+                    aria-label="Shopify store address"
+                  />
+                  {shopError && <p className="text-xs text-red-700 dark:text-red-400">{shopError}</p>}
+                  <div className="flex gap-2">
+                    <Button type="button" className="flex-1 justify-center" onClick={() => setShopifyOpen(false)}>
+                      Cancel
+                    </Button>
+                    <button type="submit" disabled={busy === name} className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium ${p.button}`}>
+                      Continue
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <button
+                  type="button"
+                  disabled={busy === name}
+                  onClick={() => (isShopify ? setShopifyOpen(true) : start(name))}
+                  className={`mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium disabled:opacity-60 ${p.button}`}
+                >
+                  <Shield size={14} /> {busy === name ? 'Waiting for sign-in…' : p.connectLabel}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className={`flex flex-wrap items-center gap-2 border-t px-4 py-3 text-xs sm:px-5 ${ui.line} ${ui.muted}`}>
+        Also:{' '}
+        {PLATFORM_NAMES.filter((n) => !FEATURED.includes(n)).map((n, i, list) => (
+          <button key={n} type="button" onClick={() => onMore(n)} className="font-medium text-teal-700 hover:underline dark:text-teal-300">
+            {n}
+            {i < list.length - 1 ? ',' : ''}
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}
 
 export default function IntegrationsPage() {
   const { stores, groups, clients, resyncStore, syncingStores, toggleStorePause, deleteStore, reauthorizeStore, askConfirm, settings, q, showToast } = useApp();
@@ -78,6 +184,8 @@ export default function IntegrationsPage() {
         <StatCard label="Paused" value={stores.filter((s) => s.status === 'paused').length} icon={Pause} />
         <StatCard label="Platforms" value={platformsInUse.length} hint={platformsInUse.join(', ')} icon={Plug} />
       </div>
+
+      <ConnectPanel stores={stores} onMore={(platform) => setEditing({ platform })} />
 
       <Card
         title={`${rows.length} store${rows.length === 1 ? '' : 's'}`}
@@ -144,8 +252,13 @@ export default function IntegrationsPage() {
               label: 'Status',
               aside: true,
               render: (s) => (
-                <span title={s.lastError || (s.authExpiresAt ? `Authorization valid until ${new Date(s.authExpiresAt).toLocaleDateString()}` : '')}>
+                <span className="inline-flex items-center gap-2" title={s.lastError || (s.authExpiresAt ? `Authorization valid until ${new Date(s.authExpiresAt).toLocaleDateString()}` : '')}>
                   <Badge status={s.status === 'paused' ? 'paused' : syncingStores[s.id] ? 'checking' : s.health} />
+                  {s.webhooks === 'active' && s.status === 'active' && (
+                    <span className="inline-flex items-center gap-1 text-xs text-teal-700 dark:text-teal-300" title="Changes arrive in real time (webhooks)">
+                      <Radio size={12} /> Live
+                    </span>
+                  )}
                 </span>
               ),
             },

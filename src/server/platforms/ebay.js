@@ -1,11 +1,10 @@
 import 'server-only';
 import { PlatformError, basic, num, requestJson } from './http';
 
-// eBay with each store's own developer keys: Client ID (App ID), Client Secret (Cert ID)
-// and RuName, typed in the Add/Edit integration window. The seller then approves access
-// once (OAuth); tokens refresh automatically (access 2 hours, refresh about 18 months).
-// The RuName's "auth accepted URL" must be <app>/api/integrations/callback/ebay.
-// EBAY_CLIENT_ID / EBAY_CLIENT_SECRET / EBAY_RUNAME are used when a store has no keys of its own.
+// eBay with OAuth ("Sign in with eBay" popup). The app keys come only from the server's
+// environment: EBAY_CLIENT_ID (App ID), EBAY_CLIENT_SECRET (Cert ID) and EBAY_RUNAME, whose
+// "auth accepted URL" must be <app>/api/integrations/callback/ebay. EBAY_ENV=sandbox for the
+// sandbox. Tokens refresh automatically (access 2 hours, refresh about 18 months).
 //
 // Listings: every active listing comes from the Trading API (GetMyeBaySelling), so items
 // listed in Seller Hub are included; listings managed by the Inventory API are marked so
@@ -39,13 +38,11 @@ const LISTING = 'ebay_listing'; // classic listing (edited by item ID through th
 
 // ---- Keys and tokens ---------------------------------------------------------------
 
-function app(creds = {}) {
-  const clientId = creds.clientId || process.env.EBAY_CLIENT_ID;
-  const clientSecret = creds.clientSecret || process.env.EBAY_CLIENT_SECRET;
-  const ruName = creds.ruName || process.env.EBAY_RUNAME;
-  if (!clientId || !clientSecret || !ruName) {
-    throw new PlatformError('Add the eBay Client ID, Client Secret and RuName in the store’s settings first.', { auth: true });
-  }
+function app() {
+  const clientId = process.env.EBAY_CLIENT_ID;
+  const clientSecret = process.env.EBAY_CLIENT_SECRET;
+  const ruName = process.env.EBAY_RUNAME;
+  if (!clientId || !clientSecret || !ruName) throw new PlatformError('eBay isn’t set up on the server yet: add EBAY_CLIENT_ID, EBAY_CLIENT_SECRET and EBAY_RUNAME.');
   return { clientId, clientSecret, ruName };
 }
 
@@ -146,6 +143,8 @@ function orderRecord(store, o) {
     currency: s.total?.currency || 'USD',
     status: orderStatus(o),
     wooStatus: o.orderFulfillmentStatus,
+    refunded: (o.paymentSummary?.refunds || []).reduce((sum, r) => sum + num(r.amount?.value), 0),
+    shippingInfo: { status: o.orderFulfillmentStatus === 'FULFILLED' ? 'shipped' : o.cancelStatus?.cancelState === 'CANCELED' ? null : 'awaiting' },
     placedAt: Date.parse(o.creationDate),
     updatedAt: Date.parse(o.lastModifiedDate),
     customer: { externalId: o.buyer?.username || null, name: addr.fullName || o.buyer?.username || 'eBay buyer', email: addr.email || '' },
@@ -176,28 +175,18 @@ export default {
   auth: 'oauth',
   pushEdits: true,
 
-  /** The store's own developer keys. Checks the Client ID and Secret with eBay before they're saved. */
-  async connect({ clientId, clientSecret, ruName }) {
-    const keys = { clientId: clientId?.trim(), clientSecret: clientSecret?.trim(), ruName: ruName?.trim() };
-    if (!keys.clientId || !keys.clientSecret || !keys.ruName) throw new PlatformError('Enter the eBay Client ID, Client Secret and RuName.');
-    try {
-      await tokenRequest(keys, { grant_type: 'client_credentials', scope: 'https://api.ebay.com/oauth/api_scope' });
-    } catch (err) {
-      throw new PlatformError(`eBay didn’t accept the Client ID and Client Secret${SANDBOX ? ' (sandbox)' : ''}. Check you copied the Production keys. ${err.message}`, { auth: true });
-    }
-    return keys;
-  },
+  requiredEnv: ['EBAY_CLIENT_ID', 'EBAY_CLIENT_SECRET', 'EBAY_RUNAME'],
 
-  authorizeUrl({ state, creds }) {
-    const keys = app(creds);
+  authorizeUrl({ state }) {
+    const keys = app();
     const q = new URLSearchParams({ client_id: keys.clientId, redirect_uri: keys.ruName, response_type: 'code', scope: SCOPES, state });
     return `${AUTH}/oauth2/authorize?${q}`;
   },
 
-  async exchangeCode({ query, creds = {} }) {
+  async exchangeCode({ query }) {
     if (!query.code) throw new PlatformError('eBay didn’t send an authorization code.');
-    const keys = app(creds);
-    const next = withTokens({ ...creds, ...keys }, await tokenRequest(keys, { grant_type: 'authorization_code', code: query.code, redirect_uri: keys.ruName }));
+    const keys = app();
+    const next = withTokens({}, await tokenRequest(keys, { grant_type: 'authorization_code', code: query.code, redirect_uri: keys.ruName }));
     const user = await requestJson(`${APIZ}/commerce/identity/v1/user/`, { platform: P, headers: { Authorization: `Bearer ${next.accessToken}` } })
       .then((r) => r.data)
       .catch(() => null);
@@ -205,11 +194,10 @@ export default {
   },
 
   async refresh(creds) {
-    return withTokens(creds, await tokenRequest(app(creds), { grant_type: 'refresh_token', refresh_token: creds.refreshToken, scope: SCOPES }));
+    return withTokens(creds, await tokenRequest(app(), { grant_type: 'refresh_token', refresh_token: creds.refreshToken, scope: SCOPES }));
   },
 
   async test({ store, creds }) {
-    if (!creds.accessToken) return { ok: true, message: 'The eBay keys are valid. Click Authorize to let Digital Hub read and manage this seller account.' };
     const user = await requestJson(`${APIZ}/commerce/identity/v1/user/`, { platform: P, headers: { Authorization: `Bearer ${creds.accessToken}` } }).then((r) => r.data);
     const xml = await trading(creds, store, 'GetMyeBaySelling', '<ActiveList><Include>true</Include><Pagination><EntriesPerPage>1</EntriesPerPage><PageNumber>1</PageNumber></Pagination></ActiveList>');
     const active = tag(tag(xml, 'ActiveList'), 'TotalNumberOfEntries') || '0';

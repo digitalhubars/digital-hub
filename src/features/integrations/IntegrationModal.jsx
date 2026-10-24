@@ -12,10 +12,11 @@ import { ui } from '../../styles/ui';
 import CsvImport from './CsvImport';
 
 const MARKET_GROUP = 'g_market';
-const emptyFields = (platform) => Object.fromEntries((PLATFORMS[platform].fields || []).map((f) => [f.key, '']));
+const emptyFields = (platform) =>
+  Object.fromEntries([...(PLATFORMS[platform].fields || []), ...(PLATFORMS[platform].tokenFields || [])].map((f) => [f.key, '']));
 
 export default function IntegrationModal({ store, onClose }) {
-  const { groups, clients, saveStore, testConnection, authorizeStore } = useApp();
+  const { groups, clients, saveStore, testConnection, authorizeStore, connectStore } = useApp();
   const isNew = !store.id;
   const [form, setForm] = useState({
     platform: store.platform || 'Shopify',
@@ -29,6 +30,8 @@ export default function IntegrationModal({ store, onClose }) {
     status: store.status || 'active',
     region: store.region || '',
     clientId: '',
+    // Shopify: 'signin' (OAuth with the store's app) or 'token' (Admin API access token)
+    method: 'signin',
   });
   const [errors, setErrors] = useState({});
   const [test, setTest] = useState(null);
@@ -41,11 +44,14 @@ export default function IntegrationModal({ store, onClose }) {
   const authorized = !isNew && !platformChanged && ['connected', 'expiring', 'checking', 'error', 'slow'].includes(store.health);
   // Keys must be typed for a new store, a changed platform, or a key store whose keys were rejected.
   const needsCredentials = isNew || platformChanged || (auth === 'key' && store.health === 'needs_auth');
-  const hasFields = !isWoo && !!platform.fields;
+  const useToken = !!platform.tokenFields && form.method === 'token';
+  const fields = useToken ? platform.tokenFields : platform.fields || [];
+  const hasFields = !isWoo && fields.length > 0;
   const region = form.region || platform.regions?.[0] || '';
   const bind = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
   const bindKey = (key) => (e) => setForm((f) => ({ ...f, keys: { ...f.keys, [key]: e.target.value } }));
-  const typedKeys = Object.values(form.keys).some((v) => v.trim());
+  const typedKeys = fields.some((f) => form.keys[f.key]?.trim());
+  const typed = () => Object.fromEntries(fields.map((f) => [f.key, (form.keys[f.key] || '').trim()]));
 
   // New marketplace stores default to the Marketplaces group (if there is one).
   const changePlatform = (next) => {
@@ -63,13 +69,13 @@ export default function IntegrationModal({ store, onClose }) {
 
   const validate = () => {
     const next = {};
-    if (!form.name.trim()) next.name = 'Store name is required.';
+    if (!form.name.trim() && !(auth === 'oauth' && !useToken)) next.name = 'Store name is required.';
     if (isWoo) {
       if (!/^https:\/\/[^\s.]+\.[^\s]+$/i.test(form.url)) next.url = 'Use the full https:// address of the WordPress site.';
       if (needsCredentials && form.consumerKey.length < 8) next.consumerKey = 'Paste the consumer key.';
       if (needsCredentials && form.consumerSecret.length < 8) next.consumerSecret = 'Paste the consumer secret.';
     } else if (hasFields && (needsCredentials || typedKeys)) {
-      platform.fields.forEach((f) => {
+      fields.forEach((f) => {
         if (!form.keys[f.key]?.trim()) next[f.key] = `Enter the ${f.label.toLowerCase()}.`;
       });
     }
@@ -82,7 +88,7 @@ export default function IntegrationModal({ store, onClose }) {
     setTest({ state: 'checking' });
     let input;
     if (isWoo && form.consumerKey) input = { url: form.url.trim().replace(/\/$/, ''), consumerKey: form.consumerKey.trim(), consumerSecret: form.consumerSecret.trim() };
-    if (hasFields && typedKeys) input = Object.fromEntries(Object.entries(form.keys).map(([k, v]) => [k, v.trim()]));
+    if (hasFields && typedKeys) input = typed();
     const result = await testConnection({ platform: form.platform, storeId: platformChanged ? undefined : store.id, input });
     setTest({ state: result.ok ? 'ok' : 'fail', message: result.message });
   };
@@ -103,8 +109,8 @@ export default function IntegrationModal({ store, onClose }) {
         credentials,
       );
     } else if (auth === 'key') {
-      const keys = typedKeys ? Object.fromEntries(Object.entries(form.keys).map(([k, v]) => [k, v.trim()])) : undefined;
-      const secretField = platform.fields.find((f) => f.secret);
+      const keys = typedKeys ? typed() : undefined;
+      const secretField = fields.find((f) => f.secret);
       const domain = keys?.domain?.toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
       await saveStore(
         {
@@ -116,11 +122,31 @@ export default function IntegrationModal({ store, onClose }) {
         form.clientId,
         keys,
       );
+    } else if (auth === 'oauth' && useToken) {
+      // Shopify "Use an access token": checked and saved by the server, connects right away.
+      const keys = typedKeys ? typed() : undefined;
+      const domain = keys?.domain?.toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+      await saveStore({ ...base, region, ...(domain ? { url: domain } : {}), keyHint: keys ? 'Admin API token' : store.keyHint }, isNew, form.clientId, keys);
     } else if (auth === 'oauth') {
-      const keys = typedKeys ? Object.fromEntries(Object.entries(form.keys).map(([k, v]) => [k, v.trim()])) : undefined;
-      await saveStore({ ...base, region, keyHint: authorized ? store.keyHint : 'Not authorized yet' }, isNew, form.clientId, keys, {
-        authorize: authorize || !authorized,
-      });
+      // "Sign in with …": the pop-up opens right here in the click (so it isn't blocked).
+      const domain = typedKeys ? typed().domain?.toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '') : undefined;
+      if (isNew) {
+        // The store is created once the seller approves; closing the pop-up leaves nothing behind.
+        connectStore({
+          platform: form.platform,
+          shop: domain,
+          meta: { name: form.name.trim(), groupId: form.groupId, region, syncFrequency: form.syncFrequency, status: form.status, clientId: form.clientId },
+        });
+      } else if (authorize || !authorized || platformChanged || (domain && domain !== store.url)) {
+        connectStore({
+          platform: form.platform,
+          storeId: store.id,
+          shop: domain || store.url,
+          prepare: () => saveStore({ ...base, region, ...(domain ? { url: domain } : {}) }, false, ''),
+        });
+      } else {
+        await saveStore({ ...base, region }, false, '');
+      }
     } else {
       await saveStore({ ...base, url: store.url || 'mercari.com', keyHint: 'CSV import' }, isNew, form.clientId);
     }
@@ -128,7 +154,7 @@ export default function IntegrationModal({ store, onClose }) {
     onClose();
   };
 
-  const primaryLabel = auth === 'oauth' && !authorized ? (isNew ? `Save & authorize` : 'Save & authorize') : isNew ? 'Connect store' : 'Save changes';
+  const primaryLabel = auth === 'oauth' && !authorized && !useToken ? platform.connectLabel || 'Save & authorize' : isNew ? 'Connect store' : 'Save changes';
 
   return (
     <Modal
@@ -165,7 +191,7 @@ export default function IntegrationModal({ store, onClose }) {
             <Select value={form.platform} onChange={changePlatform} options={PLATFORM_NAMES.map((p) => ({ value: p, label: p }))} />
           </Field>
           <Field label="Store name" error={errors.name}>
-            <input className={ui.input} value={form.name} onChange={bind('name')} placeholder={auth === 'oauth' ? 'e.g. Summit Gear Direct' : 'e.g. Harbor Coffee Co.'} />
+            <input className={ui.input} value={form.name} onChange={bind('name')} placeholder={auth === 'oauth' && !useToken ? 'Optional: the shop’s own name is used' : 'e.g. Harbor Coffee Co.'} />
           </Field>
         </div>
 
@@ -197,6 +223,23 @@ export default function IntegrationModal({ store, onClose }) {
             </div>
           )}
 
+          {platform.tokenFields && (
+            <div className="mb-4 grid grid-cols-2 gap-1 rounded-lg bg-gray-100 p-1 text-sm dark:bg-gray-800">
+              {[
+                ['signin', platform.connectLabel],
+                ['token', 'Use an access token'],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, method: value }))}
+                  className={`rounded-md px-3 py-1.5 font-medium ${form.method === value ? `bg-white shadow-sm dark:bg-gray-900 ${ui.h}` : ui.muted}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           {hasFields && (
             <div className={`space-y-4 ${auth === 'oauth' ? 'mb-4 border-b pb-4 dark:border-gray-800' : ''}`}>
               {!needsCredentials && (
@@ -205,7 +248,7 @@ export default function IntegrationModal({ store, onClose }) {
                 </p>
               )}
               <div className="grid gap-4 sm:grid-cols-2">
-                {platform.fields.map((f) => (
+                {fields.map((f) => (
                   <Field key={f.key} label={f.label} error={errors[f.key]} hint={f.hint} className={f.hint ? 'sm:col-span-2' : ''}>
                     <input
                       type={f.secret ? 'password' : 'text'}
@@ -228,7 +271,7 @@ export default function IntegrationModal({ store, onClose }) {
             </div>
           )}
 
-          {auth === 'oauth' && (
+          {auth === 'oauth' && !useToken && (
             <div className="space-y-4">
               {platform.regions && (
                 <Field label="Region">
@@ -244,7 +287,7 @@ export default function IntegrationModal({ store, onClose }) {
               <p className={`text-sm ${ui.body}`}>
                 {authorized
                   ? `Already connected. Re-authorize if you changed accounts or ${form.platform} asks you to sign in again.`
-                  : `After saving, you’ll go to ${platform.portal} to sign in and approve access, then come back here and the first sync starts.`}
+                  : `A pop-up opens ${platform.portal}’s official sign-in. Sign in (or just approve, if you’re already signed in), and the first sync starts.`}
               </p>
               {platform.scopes && <p className={`text-xs ${ui.muted}`}>Access requested: {platform.scopes.join(' · ')}.</p>}
               {authorized && (

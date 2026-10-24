@@ -2,10 +2,9 @@ import 'server-only';
 import { createHmac } from 'node:crypto';
 import { PlatformError, num, requestJson } from './http';
 
-// TikTok Shop Partner API (version 202309) with OAuth from TikTok Shop Seller Center, using
-// each store's own TikTok Shop app: App Key, App Secret and Service ID from Partner Center
-// (partner.tiktokshop.com → App & Service), typed in the Add integration window.
-// TIKTOK_APP_KEY / TIKTOK_APP_SECRET / TIKTOK_SERVICE_ID are only a fallback.
+// TikTok Shop Partner API (version 202309) with OAuth ("Connect TikTok Shop" popup). App keys
+// come only from the server's environment: TIKTOK_APP_KEY, TIKTOK_APP_SECRET and
+// TIKTOK_SERVICE_ID (Partner Center → App & Service → your app).
 // Set the app's redirect URL to <app>/api/integrations/callback/tiktok
 // Requests are signed with HMAC-SHA256 of the app secret.
 
@@ -13,13 +12,16 @@ const P = 'TikTok Shop';
 const API = 'https://open-api.tiktokglobalshop.com';
 const AUTH_API = 'https://auth.tiktok-shops.com';
 
-function app(creds = {}) {
-  const appKey = creds.appKey || process.env.TIKTOK_APP_KEY;
-  const appSecret = creds.appSecret || process.env.TIKTOK_APP_SECRET;
-  const serviceId = creds.serviceId || process.env.TIKTOK_SERVICE_ID;
-  if (!appKey || !appSecret) throw new PlatformError('Add the TikTok Shop App Key and App Secret in the store’s settings first.', { auth: true });
+function app() {
+  const appKey = process.env.TIKTOK_APP_KEY;
+  const appSecret = process.env.TIKTOK_APP_SECRET;
+  const serviceId = process.env.TIKTOK_SERVICE_ID;
+  if (!appKey || !appSecret) throw new PlatformError('TikTok Shop isn’t set up on the server yet: add TIKTOK_APP_KEY and TIKTOK_APP_SECRET.');
   return { appKey, appSecret, serviceId };
 }
+
+/** For webhook checks: the app secret and key (server environment). */
+export const tiktokApp = () => app();
 
 function sign(path, params, body, secret) {
   const keys = Object.keys(params)
@@ -30,7 +32,7 @@ function sign(path, params, body, secret) {
 }
 
 async function call(creds, method, path, { query = {}, body, shop = true } = {}) {
-  const { appKey, appSecret } = app(creds);
+  const { appKey, appSecret } = app();
   const params = { ...query, app_key: appKey, timestamp: Math.floor(Date.now() / 1000) };
   if (shop && creds.shopCipher) params.shop_cipher = creds.shopCipher;
   const bodyText = body ? JSON.stringify(body) : '';
@@ -49,8 +51,8 @@ async function call(creds, method, path, { query = {}, body, shop = true } = {})
   return data.data;
 }
 
-async function token(creds, query) {
-  const { appKey, appSecret } = app(creds);
+async function token(query) {
+  const { appKey, appSecret } = app();
   const { data } = await requestJson(`${AUTH_API}${query.grant_type === 'refresh_token' ? '/api/v2/token/refresh' : '/api/v2/token/get'}`, {
     platform: P,
     query: { app_key: appKey, app_secret: appSecret, ...query },
@@ -83,29 +85,18 @@ export default {
   platform: P,
   auth: 'oauth',
 
-  /**
-   * The store's TikTok Shop app keys. TikTok has no way to check an app key on its own, so
-   * the full check happens when the seller authorizes.
-   */
-  async connect({ appKey, appSecret, serviceId }) {
-    const keys = { appKey: appKey?.trim(), appSecret: appSecret?.trim(), serviceId: serviceId?.trim() };
-    if (!keys.appKey || !keys.appSecret || !keys.serviceId) throw new PlatformError('Enter the TikTok Shop App Key, App Secret and Service ID.');
-    if (!/^\d+$/.test(keys.serviceId)) throw new PlatformError('The Service ID is a number (Partner Center → App & Service → your app).');
-    // clientId lets the server tell whether the app changed (an existing authorization is kept if not).
-    return { ...keys, clientId: keys.appKey };
-  },
+  requiredEnv: ['TIKTOK_APP_KEY', 'TIKTOK_APP_SECRET', 'TIKTOK_SERVICE_ID'],
 
-  authorizeUrl({ state, creds }) {
-    const { serviceId } = app(creds);
-    if (!serviceId) throw new PlatformError('Add the TikTok Shop Service ID in the store’s settings first.', { auth: true });
+  authorizeUrl({ state }) {
+    const { serviceId } = app();
+    if (!serviceId) throw new PlatformError('TikTok Shop isn’t set up on the server yet: add TIKTOK_SERVICE_ID.');
     const base = process.env.TIKTOK_AUTHORIZE_URL || 'https://services.tiktokshop.com/open/authorize';
     return `${base}?${new URLSearchParams({ service_id: serviceId, state })}`;
   },
 
-  async exchangeCode({ query, creds = {} }) {
+  async exchangeCode({ query }) {
     if (!query.code) throw new PlatformError('TikTok Shop didn’t send an authorization code.');
-    const keys = app(creds);
-    const next = tokens(await token(keys, { auth_code: query.code, grant_type: 'authorized_code' }), { ...creds, ...keys, clientId: keys.appKey });
+    const next = tokens(await token({ auth_code: query.code, grant_type: 'authorized_code' }));
     const shops = await call(next, 'GET', '/authorization/202309/shops', { shop: false });
     const shop = shops?.shops?.[0];
     if (!shop) throw new PlatformError('This TikTok Shop account has no shops authorized.');
@@ -113,11 +104,10 @@ export default {
   },
 
   async refresh(creds) {
-    return tokens(await token(creds, { refresh_token: creds.refreshToken, grant_type: 'refresh_token' }), creds);
+    return tokens(await token({ refresh_token: creds.refreshToken, grant_type: 'refresh_token' }), creds);
   },
 
   async test({ creds }) {
-    if (!creds.accessToken) return { ok: true, message: 'The TikTok Shop keys are saved. Click Authorize to let Digital Hub read this shop.' };
     const shops = await call(creds, 'GET', '/authorization/202309/shops', { shop: false });
     const names = (shops?.shops || []).map((s) => s.name);
     return { ok: true, message: `Connected to TikTok Shop (${names.join(', ')}).`, account: names[0] };
@@ -186,6 +176,12 @@ export default {
         total: num(pay.total_amount),
         currency: pay.currency || 'USD',
         status: STATUS[o.status] || 'unfulfilled',
+        shippingInfo: {
+          status: ['AWAITING_COLLECTION', 'IN_TRANSIT', 'DELIVERED', 'COMPLETED'].includes(o.status) ? 'shipped' : o.status === 'CANCELLED' ? null : 'awaiting',
+          carrier: o.shipping_provider || null,
+          tracking: o.tracking_number || null,
+          shippedAt: num(o.rts_time || o.collection_time) * 1000 || null,
+        },
         placedAt: num(o.create_time) * 1000,
         updatedAt: num(o.update_time) * 1000,
         customer: { externalId: o.user_id ? String(o.user_id) : null, name: o.recipient_address?.name || 'TikTok Shop buyer', email: o.buyer_email || '' },

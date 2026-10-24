@@ -106,6 +106,13 @@ export function orderFromWoo(storeId, o) {
     wooStatus: o.status,
     placedAt: ts(o.date_created_gmt),
     updatedAt: ts(o.date_modified_gmt),
+    // WooCommerce lists refunds with negative totals.
+    refunded: (o.refunds || []).reduce((sum, r) => sum + Math.abs(num(r.total)), 0),
+    shippingInfo: {
+      status: o.status === 'completed' ? 'shipped' : o.status === 'processing' ? 'awaiting' : null,
+      carrier: o.shipping_lines?.[0]?.method_title || null,
+      shippedAt: o.status === 'completed' ? ts(o.date_completed_gmt) : null,
+    },
     syncState: 'synced',
     syncError: null,
   };

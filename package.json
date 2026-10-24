@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.118.0",
+    "@vercel/functions": "^3.10.3",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.9",
     "lucide-react": "0.454.0",

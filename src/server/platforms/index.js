@@ -32,10 +32,13 @@ import woocommerce from './woocommerce';
  *   syncProducts?(ctx, { since }) → [{ externalId, title, sku, price, stock, status, … } | { externalId, deleted: true }]
  *   syncOrders?(ctx, { since })   → [{ externalId, number, items, total, status, placedAt, customer: { externalId?, name, email }, … }]
  *   syncCustomers?(ctx, { since }) → [{ externalId, name, email }]
+ *   registerWebhooks?(ctx, { url }) → { creds?, note? }   // real-time updates; `creds` are merged into the saved credentials
+ *   pushProduct?(ctx, product, before) / pushOrder?(ctx, order) → fields to save | { deleted: true }
  *   importCsv?(store, kind, text) → { products } | { orders }
  * }
  *
  * ctx = { store, creds }. `since` (ms) is set for incremental syncs.
+ * Orders may include refunded (amount) and shippingInfo { status, carrier, tracking, trackingUrl, shippedAt }.
  * Product status must be active | draft | out_of_stock; order status unfulfilled | processing |
  * fulfilled | refunded | cancelled (see supabase/migrations).
  */
@@ -46,6 +49,6 @@ const byPlatform = Object.fromEntries(ADAPTERS.map((a) => [a.platform, a]));
 export const getAdapter = (platform) => byPlatform[platform] || null;
 
 // URL-safe names used in the OAuth callback path: /api/integrations/callback/<slug>
-const SLUGS = { Amazon: 'amazon', eBay: 'ebay', Etsy: 'etsy', 'TikTok Shop': 'tiktok' };
+const SLUGS = { Amazon: 'amazon', eBay: 'ebay', Etsy: 'etsy', Shopify: 'shopify', 'TikTok Shop': 'tiktok' };
 export const callbackSlug = (platform) => SLUGS[platform];
 export const platformFromSlug = (slug) => Object.keys(SLUGS).find((p) => SLUGS[p] === slug) || null;

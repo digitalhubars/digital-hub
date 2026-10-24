@@ -20,13 +20,14 @@ const TABLES = {
   orders: [
     'id', 'storeId', 'externalId', 'number', 'customerId', 'items', 'subtotal', 'shipping', 'tax', 'total', 'currency',
     'status', 'wooStatus', 'placedAt', 'updatedAt', 'syncState', 'syncError', 'updatedBy', 'editedAt', 'syncedAt',
+    'refunded', 'shippingInfo',
   ],
   activity: ['id', 'at', 'actor', 'actorId', 'type', 'text'],
   notifications: ['id', 'at', 'text', 'tone', 'read'],
 };
 
 const TIME_FIELDS = new Set(['at', 'createdAt', 'lastSync', 'editedAt', 'syncedAt', 'updatedAt', 'placedAt', 'authExpiresAt']);
-const NUMBER_FIELDS = new Set(['price', 'salePrice', 'subtotal', 'shipping', 'tax', 'total']);
+const NUMBER_FIELDS = new Set(['price', 'salePrice', 'subtotal', 'shipping', 'tax', 'total', 'refunded']);
 
 export const TABLE_NAMES = Object.keys(TABLES);
 

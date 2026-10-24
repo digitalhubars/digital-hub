@@ -2,7 +2,8 @@ import { Card } from '../../components/ui/Card';
 import LinkButton from '../../components/ui/LinkButton';
 import PageHeader from '../../components/ui/PageHeader';
 import { useApp } from '../../context/AppContext';
-import { ClientsStat, DashboardActions, LowStockStat, OrdersStat, RecentOrdersCard, SalesChartCard, SalesStat } from './DashboardParts';
+import { ChannelsCard, ClientsStat, DashboardActions, LowStockStat, OrdersStat, RecentOrdersCard, SalesChartCard, SalesStat } from './DashboardParts';
+import LowStockCard from './LowStockCard';
 import RecentActivityCard from './RecentActivityCard';
 import StoreHealthList from './StoreHealthList';
 import useDashboardData from './useDashboardData';
@@ -38,6 +39,11 @@ export default function AdminDashboard() {
         <Card title="Integrations" action={<LinkButton onClick={() => go('integrations')}>Manage</LinkButton>}>
           <StoreHealthList stores={data.visibleStores} />
         </Card>
+      </div>
+
+      <div className="grid gap-4 sm:gap-6 xl:grid-cols-3">
+        <ChannelsCard data={data} />
+        <LowStockCard products={data.lowStock} />
       </div>
 
       <div className="grid gap-4 sm:gap-6 xl:grid-cols-3">
