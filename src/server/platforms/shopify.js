@@ -46,6 +46,32 @@ export const shopifyDomain = (value) => {
   return validDomain(d) ? d : null;
 };
 
+/**
+ * The store's myshopify.com address. A custom domain (e.g. joshuaco.shop) is looked up through
+ * the storefront's public /meta.json (myshopify_domain), or the /admin redirect as a fallback.
+ */
+export async function resolveShopDomain(value) {
+  const direct = shopifyDomain(value);
+  if (direct) return direct;
+  const host = domainOf(value);
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(host)) return null;
+  try {
+    const res = await fetch(`https://${host}/meta.json`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10000) });
+    if (res.ok) {
+      const found = shopifyDomain((await res.json())?.myshopify_domain);
+      if (found) return found;
+    }
+  } catch {
+    // try the admin redirect
+  }
+  try {
+    const res = await fetch(`https://${host}/admin`, { redirect: 'manual', signal: AbortSignal.timeout(10000) });
+    return shopifyDomain(res.headers.get('location'));
+  } catch {
+    return null;
+  }
+}
+
 /** Webhook secret for a store: its own Client Secret (or SHOPIFY_API_SECRET, if set on the server). */
 export const shopifySecret = (creds) => creds?.clientSecret || process.env.SHOPIFY_API_SECRET || null;
 
@@ -165,16 +191,20 @@ export default {
    * { domain, token } for an older custom app's Admin API token. Checked before it's saved.
    */
   async connect({ domain, clientId, clientSecret, token }) {
-    const d = shopifyDomain(domain);
-    if (!d) throw new PlatformError('Use the store’s myshopify.com address, e.g. your-store.myshopify.com.');
+    const d = await resolveShopDomain(domain);
+    if (!d) {
+      throw new PlatformError(
+        `Couldn’t find a Shopify store at ${domainOf(domain) || 'that address'}. Use the store’s myshopify.com address (Shopify admin → Settings → Domains), e.g. your-store.myshopify.com.`,
+      );
+    }
     if (token?.trim()) {
       if (token.trim().length < 20) throw new PlatformError('Paste the full Admin API access token (starts with shpat_).');
-      const creds = { domain: d, token: token.trim(), accessToken: token.trim(), mode: 'token' };
+      const creds = { domain: d, publicDomain: domainOf(domain), token: token.trim(), accessToken: token.trim(), mode: 'token' };
       await gql(creds, '{ shop { name } }');
       return creds;
     }
     if (!clientId?.trim() || !clientSecret?.trim()) throw new PlatformError('Enter the app’s Client ID and Client Secret.');
-    return clientToken({ domain: d, clientId: clientId.trim(), clientSecret: clientSecret.trim(), mode: 'client' });
+    return clientToken({ domain: d, publicDomain: domainOf(domain), clientId: clientId.trim(), clientSecret: clientSecret.trim(), mode: 'client' });
   },
 
   /** A new 24-hour token with the saved Client ID + Secret (token-mode stores never expire). */

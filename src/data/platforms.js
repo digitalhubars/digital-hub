@@ -22,7 +22,7 @@ export const PLATFORMS = {
     scopes: ['Products & inventory (read)', 'Orders, fulfillments & refunds (read)', 'Customers (read)'],
     // App made in the Shopify Dev Dashboard (dev.shopify.com) and installed on the store.
     fields: [
-      { key: 'domain', label: 'Store domain', placeholder: 'your-store.myshopify.com' },
+      { key: 'domain', label: 'Store domain', placeholder: 'your-store.myshopify.com or your own domain' },
       { key: 'clientId', label: 'Client ID', placeholder: 'From the app’s Settings → Credentials' },
       {
         key: 'clientSecret',
