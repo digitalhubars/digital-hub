@@ -198,7 +198,8 @@ export default {
       );
     }
     if (token?.trim()) {
-      if (token.trim().length < 20) throw new PlatformError('Paste the full Admin API access token (starts with shpat_).');
+      if (/^shpss_/i.test(token.trim())) throw new PlatformError('That’s the app’s Client secret, not an access token. Choose “Client ID + Secret” and paste it there with the Client ID.');
+      if (token.trim().length < 20) throw new PlatformError('Paste the full Admin API access token (starts with shpat_ or shpca_).');
       const creds = { domain: d, publicDomain: domainOf(domain), token: token.trim(), accessToken: token.trim(), mode: 'token' };
       await gql(creds, '{ shop { name } }');
       return creds;

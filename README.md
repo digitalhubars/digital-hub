@@ -55,7 +55,7 @@ The owner (`src/config/owner.js`, and `owner_emails()` in the migration) becomes
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Browser + server (public; RLS protects the data) |
 | `SUPABASE_SECRET_KEY` | Server only. Bypasses RLS: never commit it, never prefix it with `NEXT_PUBLIC_` |
 | `CRON_SECRET` | Server only. Protects `/api/cron/sync` |
-| `TOKEN_ENCRYPTION_KEY` | Server only. Encrypts store keys and tokens; never change it once stores are connected |
+| `TOKEN_ENCRYPTION_KEY` | Optional, server only. Encrypts store keys and tokens (otherwise derived from `SUPABASE_SECRET_KEY`); don't change it once stores are connected |
 | Marketplace app keys | Server only. eBay, Etsy, Amazon, TikTok Shop: see `.env.production.example` |
 
 ## Database changes
