@@ -2,17 +2,17 @@ import 'server-only';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { PlatformError, num, requestJson, sleep } from './http';
 
-// Shopify Admin GraphQL API. Two ways to connect a store:
-// - "Sign in with Shopify" (popup OAuth): the admin types the store's myshopify.com domain,
-//   then approves in Shopify. The app keys come only from the server's environment:
-//   SHOPIFY_API_KEY (Client ID) and SHOPIFY_API_SECRET (Client Secret) of the app in the
-//   Shopify Dev Dashboard, whose allowed redirect URL is <app>/api/integrations/callback/shopify.
-//   Gives an offline access token; the secret also verifies webhooks for real-time updates.
-// - Admin API access token (shpat_…) from an existing custom app: no webhooks, so changes
+// Shopify Admin GraphQL API, connected with the store's app credentials:
+// - Store domain + Client ID + Client Secret of an app made in the Shopify Dev Dashboard
+//   (dev.shopify.com) and installed on that store. Digital Hub swaps them for an access token
+//   with Shopify's client credentials grant (no sign-in screen). Tokens last 24 hours and are
+//   renewed automatically. The Client Secret also verifies Shopify's webhooks, so changes
+//   show up in real time.
+// - Or an Admin API access token (shpat_…) from an older custom app: no webhooks, so changes
 //   arrive on each background sync.
-// Scopes: read_products, read_inventory, read_orders, read_fulfillments, read_customers
-// (read_all_orders for orders older than 60 days). Customer names/emails need the app's
-// "Protected customer data" access in the Dev Dashboard.
+// Scopes to give the app: read_products, read_inventory, read_orders, read_fulfillments,
+// read_customers (read_all_orders for orders older than 60 days). Customer names/emails also
+// need the app's "Protected customer data" access in the Dev Dashboard.
 
 const VERSION = process.env.SHOPIFY_API_VERSION || '2026-07';
 const MAX_PAGES = 40;
@@ -46,15 +46,29 @@ export const shopifyDomain = (value) => {
   return validDomain(d) ? d : null;
 };
 
-function app() {
-  const clientId = process.env.SHOPIFY_API_KEY;
-  const clientSecret = process.env.SHOPIFY_API_SECRET;
-  if (!clientId || !clientSecret) throw new PlatformError('Shopify isn’t set up on the server yet: add SHOPIFY_API_KEY and SHOPIFY_API_SECRET.');
-  return { clientId, clientSecret };
-}
+/** Webhook secret for a store: its own Client Secret (or SHOPIFY_API_SECRET, if set on the server). */
+export const shopifySecret = (creds) => creds?.clientSecret || process.env.SHOPIFY_API_SECRET || null;
 
-/** The app's secret, for checking webhook signatures (null when Shopify isn't set up). */
-export const shopifySecret = () => process.env.SHOPIFY_API_SECRET || null;
+/** Client credentials grant: Client ID + Secret → an access token for the store (24 hours). */
+async function clientToken(creds) {
+  let res;
+  try {
+    res = await requestJson(`https://${creds.domain}/admin/oauth/access_token`, {
+      platform: P,
+      method: 'POST',
+      form: { grant_type: 'client_credentials', client_id: creds.clientId, client_secret: creds.clientSecret },
+    });
+  } catch (err) {
+    const hint =
+      err.status === 404
+        ? `No Shopify store at ${creds.domain}. Check the myshopify.com address.`
+        : 'Check the Client ID and Client Secret, and that the app is installed on this store (Dev Dashboard → your app → Install app) with a released version that has the scopes.';
+    throw new PlatformError(`Shopify didn’t give an access token. ${hint} (${err.message})`, { status: err.status, auth: true });
+  }
+  const data = res.data || {};
+  if (!data.access_token) throw new PlatformError('Shopify didn’t return an access token. Check that the app is installed on this store.', { auth: true });
+  return { ...creds, accessToken: data.access_token, token: data.access_token, scope: data.scope, expiresAt: Date.now() + num(data.expires_in || 86399) * 1000 };
+}
 
 async function gql(creds, query, variables = {}) {
   for (let attempt = 0; ; attempt++) {
@@ -135,18 +149,6 @@ function orderStatus(o) {
   return 'unfulfilled';
 }
 
-/** Shopify signs OAuth redirects: HMAC-SHA256 (hex) of the sorted query, without `hmac`, keyed by the Client Secret. */
-function validRedirect(query, secret) {
-  const { hmac, signature: _s, ...rest } = query;
-  if (!hmac) return false;
-  const message = Object.keys(rest)
-    .sort()
-    .map((k) => `${k}=${Array.isArray(rest[k]) ? rest[k].join(',') : rest[k]}`)
-    .join('&');
-  const expected = createHmac('sha256', secret).update(message).digest('hex');
-  return expected.length === hmac.length && timingSafeEqual(Buffer.from(expected), Buffer.from(hmac));
-}
-
 /** Webhooks: X-Shopify-Hmac-Sha256 = base64 HMAC-SHA256 of the raw body, keyed by the Client Secret. */
 export function validShopifyWebhook(rawBody, header, secret) {
   if (!header || !secret) return false;
@@ -156,43 +158,28 @@ export function validShopifyWebhook(rawBody, header, secret) {
 
 export default {
   platform: P,
-  auth: 'oauth',
+  auth: 'key',
 
-  requiredEnv: ['SHOPIFY_API_KEY', 'SHOPIFY_API_SECRET'],
-
-  /** The "Use an access token" alternative: { domain, token } from an existing custom app. Connects right away. */
-  async connect({ domain, token }) {
+  /**
+   * { domain, clientId, clientSecret } → access token via the client credentials grant, or
+   * { domain, token } for an older custom app's Admin API token. Checked before it's saved.
+   */
+  async connect({ domain, clientId, clientSecret, token }) {
     const d = shopifyDomain(domain);
     if (!d) throw new PlatformError('Use the store’s myshopify.com address, e.g. your-store.myshopify.com.');
-    if (!token?.trim() || token.trim().length < 20) throw new PlatformError('Paste the full Admin API access token (starts with shpat_).');
-    const creds = { domain: d, token: token.trim(), accessToken: token.trim(), mode: 'token' };
-    await gql(creds, '{ shop { name } }');
-    return creds;
+    if (token?.trim()) {
+      if (token.trim().length < 20) throw new PlatformError('Paste the full Admin API access token (starts with shpat_).');
+      const creds = { domain: d, token: token.trim(), accessToken: token.trim(), mode: 'token' };
+      await gql(creds, '{ shop { name } }');
+      return creds;
+    }
+    if (!clientId?.trim() || !clientSecret?.trim()) throw new PlatformError('Enter the app’s Client ID and Client Secret.');
+    return clientToken({ domain: d, clientId: clientId.trim(), clientSecret: clientSecret.trim(), mode: 'client' });
   },
 
-  /** meta.shop = the domain typed before the popup opened (or the store's saved domain). */
-  authorizeUrl({ state, redirectUri, meta = {}, store }) {
-    const shop = shopifyDomain(meta.shop || store?.url);
-    if (!shop) throw new PlatformError('Enter the store’s myshopify.com address first.');
-    const q = new URLSearchParams({ client_id: app().clientId, scope: SCOPES, redirect_uri: redirectUri, state });
-    return `https://${shop}/admin/oauth/authorize?${q}`;
-  },
-
-  async exchangeCode({ query, meta = {}, store }) {
-    const { clientId, clientSecret } = app();
-    if (!validRedirect(query, clientSecret)) throw new PlatformError('Shopify’s redirect signature didn’t match. Try again.');
-    const expected = shopifyDomain(meta.shop || store?.url);
-    const shop = shopifyDomain(query.shop);
-    if (!shop || shop !== expected) throw new PlatformError(`Shopify returned a different store (${query.shop}) than ${expected}.`);
-    if (!query.code) throw new PlatformError('Shopify didn’t send an authorization code.');
-    const { data } = await requestJson(`https://${shop}/admin/oauth/access_token`, {
-      platform: P,
-      method: 'POST',
-      body: { client_id: clientId, client_secret: clientSecret, code: query.code },
-    });
-    const creds = { domain: shop, accessToken: data.access_token, token: data.access_token, scope: data.scope, mode: 'oauth' };
-    const info = await gql(creds, '{ shop { name } }');
-    return { ...creds, account: info.shop.name, url: shop };
+  /** A new 24-hour token with the saved Client ID + Secret (token-mode stores never expire). */
+  async refresh(creds) {
+    return clientToken(creds);
   },
 
   async test({ creds }) {
@@ -282,11 +269,11 @@ export default {
 
   /**
    * Real-time updates: subscribes the store to order, refund, fulfillment, product, inventory
-   * and customer events (only for stores connected with Sign in with Shopify, whose Client
-   * Secret verifies the deliveries). Returns the fields to keep in the credentials.
+   * and customer events (stores connected with a Client ID + Secret; the secret verifies
+   * the deliveries). Returns the fields to keep in the credentials.
    */
   async registerWebhooks({ creds }, { url }) {
-    if (creds.mode === 'token' || !shopifySecret()) return { note: 'Live updates need “Sign in with Shopify”; this store syncs on a schedule.' };
+    if (creds.mode === 'token' || !shopifySecret(creds)) return { note: 'Live updates need the app’s Client ID and Client Secret; this store syncs on a schedule.' };
     if (creds.webhookUrl === url && creds.webhookIds?.length) return {};
     for (const id of creds.webhookIds || []) {
       await gql(creds, 'mutation($id: ID!) { webhookSubscriptionDelete(id: $id) { userErrors { message } } }', { id }).catch(() => {});

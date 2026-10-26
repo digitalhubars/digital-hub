@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { waitUntil } from '@vercel/functions';
-import { consumeOAuthState, saveCredentials, setStore } from '../../../../../server/credentials';
+import { consumeOAuthState, credentialsFrom, loadSecretsRow, saveCredentials, setStore } from '../../../../../server/credentials';
 import { resultPage } from '../../../../../server/oauthPage';
 import { getAdapter, platformFromSlug } from '../../../../../server/platforms';
 import { adminDb, must } from '../../../../../server/supabase';
@@ -62,7 +62,8 @@ export async function GET(request, { params }) {
 
   try {
     const redirectUri = `${origin}/api/integrations/callback/${params.platform}`;
-    const creds = await adapter.exchangeCode({ query, redirectUri, codeVerifier: saved.code_verifier, meta: saved.meta, store: store || { region: saved.meta.region } });
+    const appKeys = store ? credentialsFrom(store, await loadSecretsRow(store.id)) || {} : {};
+    const creds = await adapter.exchangeCode({ query, redirectUri, codeVerifier: saved.code_verifier, meta: saved.meta, store: store || { region: saved.meta.region }, creds: appKeys });
     if (!store) store = await createStore(platform, saved.meta, creds);
     await saveCredentials(store, creds);
     await setStore(store.id, {

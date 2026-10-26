@@ -130,12 +130,38 @@ export default function IntegrationModal({ store, onClose }) {
     } else if (auth === 'oauth') {
       // "Sign in with …": the pop-up opens right here in the click (so it isn't blocked).
       const domain = typedKeys ? typed().domain?.toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '') : undefined;
-      if (isNew) {
+      if (isNew && typedKeys) {
+        // Save the store with its app keys (checked by the platform), then the seller approves once.
+        connectStore({
+          platform: form.platform,
+          prepare: async () => {
+            const saved = await saveStore(
+              { ...base, region, keyHint: 'App keys saved · approval needed' },
+              true,
+              form.clientId,
+              typed(),
+              { approvalNext: true },
+            );
+            return saved ? { storeId: saved.id } : { done: { status: 'blocked' } };
+          },
+        });
+      } else if (isNew) {
         // The store is created once the seller approves; closing the pop-up leaves nothing behind.
         connectStore({
           platform: form.platform,
           shop: domain,
           meta: { name: form.name.trim(), groupId: form.groupId, region, syncFrequency: form.syncFrequency, status: form.status, clientId: form.clientId },
+        });
+      } else if (typedKeys) {
+        // New app keys: save the store and keys first (checked by the platform), then approve once.
+        connectStore({
+          platform: form.platform,
+          storeId: store.id,
+          prepare: async () => {
+            const saved = await saveStore({ ...base, region }, false, '', typed(), { approvalNext: true });
+            if (!saved) return { done: { status: 'blocked' } };
+            return saved.authorized && !authorize ? { done: { status: 'connected', message: 'App keys updated.' } } : { storeId: store.id };
+          },
         });
       } else if (authorize || !authorized || platformChanged || (domain && domain !== store.url)) {
         connectStore({
@@ -226,7 +252,7 @@ export default function IntegrationModal({ store, onClose }) {
           {platform.tokenFields && (
             <div className="mb-4 grid grid-cols-2 gap-1 rounded-lg bg-gray-100 p-1 text-sm dark:bg-gray-800">
               {[
-                ['signin', platform.connectLabel],
+                ['signin', platform.keysLabel || 'App credentials'],
                 ['token', 'Use an access token'],
               ].map(([value, label]) => (
                 <button

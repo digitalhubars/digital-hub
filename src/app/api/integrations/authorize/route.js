@@ -1,4 +1,4 @@
-import { createOAuthState } from '../../../../server/credentials';
+import { createOAuthState, credentialsFrom, loadSecretsRow } from '../../../../server/credentials';
 import { callbackSlug, getAdapter } from '../../../../server/platforms';
 import { shopifyDomain } from '../../../../server/platforms/shopify';
 import { HttpError, requireAdmin, route } from '../../../../server/supabase';
@@ -25,11 +25,16 @@ export const POST = route(async (request, body) => {
   const adapter = getAdapter(platform);
   if (adapter?.auth !== 'oauth') throw new HttpError(400, `${platform} doesn’t use sign-in.`);
 
-  const missing = missingEnv(adapter);
-  if (missing.length) throw new HttpError(400, `${platform} isn’t set up on the server yet. Add ${missing.join(', ')} to the environment variables (Vercel → Settings), then redeploy.`);
+  // App keys: the store's own (saved from the connect window) or the server's variables.
+  const saved = existing ? credentialsFrom(existing, await loadSecretsRow(existing.id)) || {} : {};
+  const ownKeys = (adapter.appKeyFields || []).length > 0 && adapter.appKeyFields.every((k) => saved[k]);
+  const missing = ownKeys ? [] : missingEnv(adapter);
+  if (missing.length) {
+    throw new HttpError(400, `Enter ${platform}’s app credentials in the store’s connect window first (or add ${missing.join(', ')} to the server’s environment variables).`);
+  }
   if (adapter.checkApp) {
     try {
-      await adapter.checkApp();
+      await adapter.checkApp(saved);
     } catch (err) {
       throw new HttpError(400, err.message);
     }

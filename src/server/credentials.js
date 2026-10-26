@@ -130,19 +130,22 @@ const b64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g
 export async function createOAuthState({ storeId = null, platform, uid, pkce, meta = {} }) {
   const state = b64url(randomBytes(24));
   const codeVerifier = pkce ? b64url(randomBytes(48)) : null;
-  must(
-    await db()
-      .from('oauth_states')
-      .insert({
-        state,
-        store_id: storeId,
-        platform,
-        created_by: uid,
-        code_verifier: codeVerifier ? encrypt(codeVerifier) : null,
-        meta,
-        expires_at: new Date(Date.now() + 15 * 60000).toISOString(),
-      }),
-  );
+  const row = {
+    state,
+    store_id: storeId,
+    platform,
+    created_by: uid,
+    code_verifier: codeVerifier ? encrypt(codeVerifier) : null,
+    meta,
+    expires_at: new Date(Date.now() + 15 * 60000).toISOString(),
+  };
+  let res = await db().from('oauth_states').insert(row);
+  // Before migration 20261026 there's no meta column: fine for an existing store.
+  if (res.error?.code === 'PGRST204' && storeId) {
+    const { meta: _m, ...rest } = row;
+    res = await db().from('oauth_states').insert(rest);
+  }
+  must(res);
   return { state };
 }
 

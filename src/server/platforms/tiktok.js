@@ -12,16 +12,18 @@ const P = 'TikTok Shop';
 const API = 'https://open-api.tiktokglobalshop.com';
 const AUTH_API = 'https://auth.tiktok-shops.com';
 
-function app() {
-  const appKey = process.env.TIKTOK_APP_KEY;
-  const appSecret = process.env.TIKTOK_APP_SECRET;
-  const serviceId = process.env.TIKTOK_SERVICE_ID;
-  if (!appKey || !appSecret) throw new PlatformError('TikTok Shop isn’t set up on the server yet: add TIKTOK_APP_KEY and TIKTOK_APP_SECRET.');
+/** The app keys: the store's own (typed in the connect window) or the server's TIKTOK_* variables. */
+function app(creds = {}) {
+  const appKey = creds.appKey || process.env.TIKTOK_APP_KEY;
+  const appSecret = creds.appSecret || process.env.TIKTOK_APP_SECRET;
+  const serviceId = creds.serviceId || process.env.TIKTOK_SERVICE_ID;
+  if (!appKey || !appSecret) throw new PlatformError('Enter the TikTok Shop App Key and App Secret in the store’s connect window.');
   return { appKey, appSecret, serviceId };
 }
 
 /** For webhook checks: the app secret and key (server environment). */
-export const tiktokApp = () => app();
+/** For webhook checks: a store's app keys, or the server's. */
+export const tiktokApp = (creds) => app(creds);
 
 function sign(path, params, body, secret) {
   const keys = Object.keys(params)
@@ -32,7 +34,7 @@ function sign(path, params, body, secret) {
 }
 
 async function call(creds, method, path, { query = {}, body, shop = true } = {}) {
-  const { appKey, appSecret } = app();
+  const { appKey, appSecret } = app(creds);
   const params = { ...query, app_key: appKey, timestamp: Math.floor(Date.now() / 1000) };
   if (shop && creds.shopCipher) params.shop_cipher = creds.shopCipher;
   const bodyText = body ? JSON.stringify(body) : '';
@@ -51,8 +53,8 @@ async function call(creds, method, path, { query = {}, body, shop = true } = {})
   return data.data;
 }
 
-async function token(query) {
-  const { appKey, appSecret } = app();
+async function token(creds, query) {
+  const { appKey, appSecret } = app(creds);
   const { data } = await requestJson(`${AUTH_API}${query.grant_type === 'refresh_token' ? '/api/v2/token/refresh' : '/api/v2/token/get'}`, {
     platform: P,
     query: { app_key: appKey, app_secret: appSecret, ...query },
@@ -86,17 +88,26 @@ export default {
   auth: 'oauth',
 
   requiredEnv: ['TIKTOK_APP_KEY', 'TIKTOK_APP_SECRET', 'TIKTOK_SERVICE_ID'],
+  appKeyFields: ['appKey', 'appSecret', 'serviceId'],
 
-  authorizeUrl({ state }) {
-    const { serviceId } = app();
+  /** The store's TikTok Shop app keys (TikTok can only check them when the seller approves). */
+  async connect({ appKey, appSecret, serviceId }) {
+    const keys = { appKey: appKey?.trim(), appSecret: appSecret?.trim(), serviceId: serviceId?.trim() };
+    if (!keys.appKey || !keys.appSecret || !keys.serviceId) throw new PlatformError('Enter the TikTok Shop App Key, App Secret and Service ID.');
+    if (!/^[0-9]+$/.test(keys.serviceId)) throw new PlatformError('The Service ID is a number (Partner Center → App & Service → your app).');
+    return { ...keys, clientId: keys.appKey };
+  },
+
+  authorizeUrl({ state, creds }) {
+    const { serviceId } = app(creds);
     if (!serviceId) throw new PlatformError('TikTok Shop isn’t set up on the server yet: add TIKTOK_SERVICE_ID.');
     const base = process.env.TIKTOK_AUTHORIZE_URL || 'https://services.tiktokshop.com/open/authorize';
     return `${base}?${new URLSearchParams({ service_id: serviceId, state })}`;
   },
 
-  async exchangeCode({ query }) {
+  async exchangeCode({ query, creds = {} }) {
     if (!query.code) throw new PlatformError('TikTok Shop didn’t send an authorization code.');
-    const next = tokens(await token({ auth_code: query.code, grant_type: 'authorized_code' }));
+    const next = tokens(await token(creds, { auth_code: query.code, grant_type: 'authorized_code' }), { ...creds });
     const shops = await call(next, 'GET', '/authorization/202309/shops', { shop: false });
     const shop = shops?.shops?.[0];
     if (!shop) throw new PlatformError('This TikTok Shop account has no shops authorized.');
@@ -104,7 +115,7 @@ export default {
   },
 
   async refresh(creds) {
-    return tokens(await token({ refresh_token: creds.refreshToken, grant_type: 'refresh_token' }), creds);
+    return tokens(await token(creds, { refresh_token: creds.refreshToken, grant_type: 'refresh_token' }), creds);
   },
 
   async test({ creds }) {

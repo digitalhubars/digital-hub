@@ -446,12 +446,15 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
     showToast({ pending: true, title: `Signing in to ${platform}…`, body: 'Finish in the pop-up window.' });
     (async () => {
       try {
-        if (prepare) await prepare();
-        const { connectUrl } = await callApi('integrations/authorize', { platform, storeId, shop, ...meta });
+        // prepare() may save the store and its app keys first: { storeId } or { done: outcome }.
+        const prepared = prepare ? await prepare() : null;
+        if (prepared?.done) return popup.finish(prepared.done);
+        const { connectUrl } = await callApi('integrations/authorize', { platform, storeId: prepared?.storeId || storeId, shop, ...meta });
         popup.go(connectUrl);
       } catch (err) {
         popup.fail(callError(err));
       }
+      return undefined;
     })();
     return popup.result.then((result) => {
       reportSignIn(platform, result);
@@ -496,7 +499,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
    * Keys go to the server, which checks them and saves them encrypted; no browser can read them back.
    * options.authorize: for OAuth platforms, go straight to the marketplace's sign-in after saving.
    */
-  const saveStore = async (store, isNew, clientId, credentials, { authorize = false } = {}) => {
+  const saveStore = async (store, isNew, clientId, credentials, { authorize = false, approvalNext = false } = {}) => {
     const { credentialsChanged: _c, ...data } = store;
     const id = isNew ? uid('st') : data.id;
     const previous = storeOf(id);
@@ -535,8 +538,9 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
       if (!result.ok) {
         log(`Saved ${record.platform} store ${record.name} (keys rejected)`, 'integration');
         showToast({ tone: 'danger', title: `${record.platform} didn’t accept the keys`, body: `${result.message} The store is saved; edit it to try again.` });
-        return id;
+        return approvalNext ? null : id;
       }
+      if (approvalNext) return { id, authorized: !!result.authorized };
       // New app keys need the seller to approve access again.
       if (auth === 'oauth' && !result.authorized) mustAuthorize = true;
       // A ready-made token (Shopify Admin API token) connects without the sign-in step.

@@ -1,8 +1,9 @@
 import 'server-only';
 import { PlatformError, basic, num, requestJson } from './http';
 
-// eBay with OAuth ("Sign in with eBay" popup). The app keys come only from the server's
-// environment: EBAY_CLIENT_ID (App ID), EBAY_CLIENT_SECRET (Cert ID) and EBAY_RUNAME, whose
+// eBay with the store's app credentials: Client ID (App ID), Client Secret (Cert ID) and RuName,
+// typed in the connect window (EBAY_CLIENT_ID / EBAY_CLIENT_SECRET / EBAY_RUNAME as a fallback). The
+// seller then approves access once (eBay requires it). The RuName's
 // "auth accepted URL" must be <app>/api/integrations/callback/ebay. EBAY_ENV=sandbox for the
 // sandbox. Tokens refresh automatically (access 2 hours, refresh about 18 months).
 //
@@ -38,11 +39,12 @@ const LISTING = 'ebay_listing'; // classic listing (edited by item ID through th
 
 // ---- Keys and tokens ---------------------------------------------------------------
 
-function app() {
-  const clientId = process.env.EBAY_CLIENT_ID;
-  const clientSecret = process.env.EBAY_CLIENT_SECRET;
-  const ruName = process.env.EBAY_RUNAME;
-  if (!clientId || !clientSecret || !ruName) throw new PlatformError('eBay isn’t set up on the server yet: add EBAY_CLIENT_ID, EBAY_CLIENT_SECRET and EBAY_RUNAME.');
+/** The app keys: the store's own (typed in the connect window) or the server's EBAY_* variables. */
+function app(creds = {}) {
+  const clientId = creds.clientId || process.env.EBAY_CLIENT_ID;
+  const clientSecret = creds.clientSecret || process.env.EBAY_CLIENT_SECRET;
+  const ruName = creds.ruName || process.env.EBAY_RUNAME;
+  if (!clientId || !clientSecret || !ruName) throw new PlatformError('Enter the eBay Client ID, Client Secret and RuName in the store’s connect window.');
   return { clientId, clientSecret, ruName };
 }
 
@@ -176,17 +178,30 @@ export default {
   pushEdits: true,
 
   requiredEnv: ['EBAY_CLIENT_ID', 'EBAY_CLIENT_SECRET', 'EBAY_RUNAME'],
+  appKeyFields: ['clientId', 'clientSecret', 'ruName'],
 
-  authorizeUrl({ state }) {
-    const keys = app();
+  /** The store's eBay app keys. The Client ID and Secret are checked with eBay before they're saved. */
+  async connect({ clientId, clientSecret, ruName }) {
+    const keys = { clientId: clientId?.trim(), clientSecret: clientSecret?.trim(), ruName: ruName?.trim() };
+    if (!keys.clientId || !keys.clientSecret || !keys.ruName) throw new PlatformError('Enter the eBay Client ID, Client Secret and RuName.');
+    try {
+      await tokenRequest(keys, { grant_type: 'client_credentials', scope: 'https://api.ebay.com/oauth/api_scope' });
+    } catch (err) {
+      throw new PlatformError(`eBay didn’t accept the Client ID and Client Secret${SANDBOX ? ' (sandbox)' : ''}. Use the Production keys. ${err.message}`, { auth: true });
+    }
+    return keys;
+  },
+
+  authorizeUrl({ state, creds }) {
+    const keys = app(creds);
     const q = new URLSearchParams({ client_id: keys.clientId, redirect_uri: keys.ruName, response_type: 'code', scope: SCOPES, state });
     return `${AUTH}/oauth2/authorize?${q}`;
   },
 
-  async exchangeCode({ query }) {
+  async exchangeCode({ query, creds = {} }) {
     if (!query.code) throw new PlatformError('eBay didn’t send an authorization code.');
-    const keys = app();
-    const next = withTokens({}, await tokenRequest(keys, { grant_type: 'authorization_code', code: query.code, redirect_uri: keys.ruName }));
+    const keys = app(creds);
+    const next = withTokens({ ...creds }, await tokenRequest(keys, { grant_type: 'authorization_code', code: query.code, redirect_uri: keys.ruName }));
     const user = await requestJson(`${APIZ}/commerce/identity/v1/user/`, { platform: P, headers: { Authorization: `Bearer ${next.accessToken}` } })
       .then((r) => r.data)
       .catch(() => null);
@@ -194,7 +209,7 @@ export default {
   },
 
   async refresh(creds) {
-    return withTokens(creds, await tokenRequest(app(), { grant_type: 'refresh_token', refresh_token: creds.refreshToken, scope: SCOPES }));
+    return withTokens(creds, await tokenRequest(app(creds), { grant_type: 'refresh_token', refresh_token: creds.refreshToken, scope: SCOPES }));
   },
 
   async test({ store, creds }) {

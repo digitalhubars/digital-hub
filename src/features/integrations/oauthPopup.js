@@ -94,6 +94,15 @@ export function openOAuthPopup(slug, { onLate } = {}) {
     go(url) {
       if (!win.closed) win.location.href = url;
     },
+    /** Closes the popup and resolves with this outcome (e.g. nothing left to approve). */
+    finish(outcome) {
+      try {
+        win.close();
+      } catch {
+        // ignore
+      }
+      finish(outcome);
+    },
     /** Shows an error in the caller and closes the popup. */
     fail(message) {
       try {

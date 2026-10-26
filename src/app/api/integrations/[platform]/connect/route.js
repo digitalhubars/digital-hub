@@ -1,4 +1,4 @@
-import { peekOAuthState } from '../../../../../server/credentials';
+import { credentialsFrom, loadSecretsRow, peekOAuthState } from '../../../../../server/credentials';
 import { connectingPage, resultPage } from '../../../../../server/oauthPage';
 import { getAdapter, platformFromSlug } from '../../../../../server/platforms';
 import { appOrigin, getRecord } from '../../../../../server/sync';
@@ -24,7 +24,9 @@ export async function GET(request, { params }) {
 
   try {
     const store = saved.store_id ? await getRecord('stores', saved.store_id) : null;
+    const creds = store ? credentialsFrom(store, await loadSecretsRow(store.id)) || {} : {};
     const url = adapter.authorizeUrl({
+      creds,
       state: stateParam,
       redirectUri: `${origin}/api/integrations/callback/${params.platform}`,
       codeChallenge: saved.code_challenge,

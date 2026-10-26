@@ -21,26 +21,25 @@ export async function POST(request) {
   }
   const signature = request.headers.get('authorization') || '';
   const shopId = String(event.shop_id || '');
-  let app;
-  try {
-    app = tiktokApp();
-  } catch {
-    return new Response('not set up', { status: 503 });
-  }
-  const expected = createHmac('sha256', app.appSecret).update(app.appKey + raw).digest('hex');
-  if (expected.length !== signature.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) {
-    console.warn('tiktok webhook rejected: bad signature', shopId, event.type);
-    return new Response('bad signature', { status: 401 });
-  }
+  const signedBy = (creds) => {
+    let app;
+    try {
+      app = tiktokApp(creds);
+    } catch {
+      return false;
+    }
+    const expected = createHmac('sha256', app.appSecret).update(app.appKey + raw).digest('hex');
+    return expected.length === signature.length && timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  };
 
   const stores = must(await adminDb().from('stores').select('id').eq('platform', 'TikTok Shop').eq('status', 'active'));
   for (const { id } of stores) {
     const store = await getRecord('stores', id);
     const creds = credentialsFrom(store, await loadSecretsRow(id));
-    if (String(creds?.shopId) !== shopId) continue;
+    if (String(creds?.shopId) !== shopId || !signedBy(creds)) continue;
     queueStoreSync(id, appOrigin(request));
     return Response.json({ code: 0, message: 'success' });
   }
-  // Signed by our app but for a shop that isn't connected (any more): acknowledge so TikTok stops retrying.
-  return Response.json({ code: 0, message: 'ignored' });
+  console.warn('tiktok webhook rejected: unknown shop or bad signature', shopId, event.type);
+  return new Response('unknown shop or bad signature', { status: 401 });
 }

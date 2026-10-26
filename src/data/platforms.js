@@ -11,16 +11,26 @@ export const PLATFORMS = {
   Shopify: {
     slug: 'shopify',
     api: 'Shopify Admin API',
-    auth: 'oauth',
+    auth: 'key',
     idLabel: 'Product ID',
     account: 'Shop',
     portal: 'Shopify',
-    connectLabel: 'Sign in with Shopify',
+    connectLabel: 'Connect Shopify',
+    keysLabel: 'Client ID + Secret',
     button: 'bg-[#008060] text-white hover:bg-[#006e52]',
     live: 'webhooks',
     scopes: ['Products & inventory (read)', 'Orders, fulfillments & refunds (read)', 'Customers (read)'],
-    // "Sign in with Shopify" asks only for the store's address; the app keys are on the server.
-    fields: [{ key: 'domain', label: 'Store domain', placeholder: 'your-store.myshopify.com', hint: 'You’ll approve access in Shopify in a pop-up window.' }],
+    // App made in the Shopify Dev Dashboard (dev.shopify.com) and installed on the store.
+    fields: [
+      { key: 'domain', label: 'Store domain', placeholder: 'your-store.myshopify.com' },
+      { key: 'clientId', label: 'Client ID', placeholder: 'From the app’s Settings → Credentials' },
+      {
+        key: 'clientSecret',
+        label: 'Client secret',
+        secret: true,
+        hint: 'Shopify Dev Dashboard → your app → Settings → Credentials. The app must be installed on this store, with scopes read_products, read_inventory, read_orders, read_fulfillments, read_customers.',
+      },
+    ],
     // Alternative: an Admin API access token from an existing custom app (no live updates).
     tokenFields: [
       { key: 'domain', label: 'Store domain', placeholder: 'your-store.myshopify.com' },
@@ -66,10 +76,22 @@ export const PLATFORMS = {
     idLabel: 'Item ID',
     account: 'eBay user',
     portal: 'eBay',
-    connectLabel: 'Sign in with eBay',
+    connectLabel: 'Connect eBay',
     button: 'bg-[#0064D2] text-white hover:bg-[#0057B8]',
     regions: ['United States', 'United Kingdom', 'Germany', 'Australia'],
     scopes: ['Listings: read, edit price/quantity/title, end', 'Orders: read, mark shipped', 'Account name'],
+    // The store's eBay app (developer.ebay.com → Application Keys, Production). eBay then asks the seller to approve once.
+    fields: [
+      { key: 'clientId', label: 'Client ID (App ID)', placeholder: 'YourName-AppName-PRD-…' },
+      { key: 'clientSecret', label: 'Client secret (Cert ID)', placeholder: 'PRD-…', secret: true },
+      {
+        key: 'ruName',
+        label: 'RuName',
+        placeholder: 'Your_Name-YourName-AppNam-abcdefg',
+        hint: 'developer.ebay.com → User Tokens → your RuName. Set its “auth accepted URL” to:',
+        callback: 'ebay',
+      },
+    ],
     tone: 'border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300',
     dot: 'bg-sky-600 dark:bg-sky-400',
   },
@@ -80,9 +102,14 @@ export const PLATFORMS = {
     idLabel: 'Listing ID',
     account: 'Shop',
     portal: 'Etsy',
-    connectLabel: 'Sign in with Etsy',
+    connectLabel: 'Connect Etsy',
     button: 'bg-[#F1641E] text-white hover:bg-[#D9561A]',
     scopes: ['Shop (read)', 'Listings (read)', 'Orders (read)'],
+    // The store's Etsy app (etsy.com/developers/your-apps; must be approved). Etsy then asks the seller to approve once.
+    fields: [
+      { key: 'keystring', label: 'Keystring (Client ID)', placeholder: 'e.g. 1aa2bb33c44d55eeeeee6fff' },
+      { key: 'sharedSecret', label: 'Shared secret (Client secret)', secret: true, hint: 'Add this callback URL on the Etsy app:', callback: 'etsy' },
+    ],
     tone: 'border-orange-200 bg-orange-50 text-orange-800 dark:border-orange-500/30 dark:bg-orange-500/10 dark:text-orange-300',
     dot: 'bg-orange-500 dark:bg-orange-400',
   },
@@ -113,6 +140,12 @@ export const PLATFORMS = {
     live: 'webhooks',
     button: 'bg-gray-950 text-white hover:bg-black dark:bg-white dark:text-gray-950 dark:hover:bg-gray-200',
     scopes: ['Products (read)', 'Orders (read)'],
+    // The store's TikTok Shop app (partner.tiktokshop.com → App & Service). TikTok then asks the seller to approve once.
+    fields: [
+      { key: 'appKey', label: 'App key (Client ID)', placeholder: 'e.g. 6abc1d2ef3gh4' },
+      { key: 'appSecret', label: 'App secret (Client secret)', secret: true },
+      { key: 'serviceId', label: 'Service ID', placeholder: 'e.g. 7123456789012345678', hint: 'Set the app’s Redirect URL to:', callback: 'tiktok' },
+    ],
     tone: 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300',
     dot: 'bg-rose-600 dark:bg-rose-400',
   },
