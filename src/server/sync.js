@@ -337,6 +337,36 @@ export async function pushOrder(order) {
   }
 }
 
+/**
+ * Deletes an order on its store, then in Digital Hub. WooCommerce moves it to the trash;
+ * platforms with `deleteOrder` (Shopify) delete it there; on the others it's removed from
+ * Digital Hub only. Returns { state: 'deleted' | 'local' | 'error', error? }.
+ */
+export async function deleteOrder(order) {
+  const { store, creds } = await loadStore(order.storeId);
+  const adapter = store && getAdapter(store.platform);
+  try {
+    if (store && !store.sample && order.externalId) {
+      if (store.platform === 'WooCommerce') {
+        if (!creds) throw new Error('This store isn’t connected. Add its keys first.');
+        await wooFetch(creds, `/orders/${order.externalId}`, { method: 'DELETE' }).catch((err) => {
+          if (!(err instanceof WooError && err.status === 404)) throw err;
+        });
+      } else if (adapter?.deleteOrder) {
+        await adapter.deleteOrder({ store, creds: await authorizedCredentials(store, adapter) }, order);
+      } else {
+        await remove('orders', order.id);
+        return { state: 'local' };
+      }
+    }
+    await remove('orders', order.id);
+    return { state: 'deleted' };
+  } catch (err) {
+    console.warn('order delete failed', order.id, err.message);
+    return { state: 'error', error: err.message };
+  }
+}
+
 // Edits made while a store was paused, or that failed before.
 export async function pushPending(storeId) {
   for (const table of ['products', 'orders']) {

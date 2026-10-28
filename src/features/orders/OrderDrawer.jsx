@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Trash2 } from 'lucide-react';
 import { Badge, StoreBadge } from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import Callout from '../../components/ui/Callout';
@@ -9,7 +10,7 @@ import { formatDateTime } from '../../lib/format';
 import { ORDER_STATUSES, STATUS, ui } from '../../styles/ui';
 
 export default function OrderDrawer({ order, onClose }) {
-  const { access, storeOf, customerOf, money, updateOrderStatus, openDrawer } = useApp();
+  const { access, role, isAdmin, storeOf, customerOf, money, updateOrderStatus, deleteOrders, askConfirm, openDrawer } = useApp();
   const [status, setStatus] = useState(order.status);
   useEffect(() => setStatus(order.status), [order.status]);
 
@@ -38,6 +39,24 @@ export default function OrderDrawer({ order, onClose }) {
             <Button variant="primary" disabled={status === order.status} onClick={() => updateOrderStatus(order, status)}>
               Update and sync
             </Button>
+            {isAdmin && role === 'admin' && (
+              <Button
+                variant="danger"
+                onClick={() =>
+                  askConfirm({
+                    title: `Delete order ${order.number}?`,
+                    body: `It’s deleted in Digital Hub and, where ${store?.platform} allows it, on ${store?.name} too (WooCommerce moves it to the trash).`,
+                    confirmLabel: 'Delete',
+                    onConfirm: () => {
+                      onClose();
+                      deleteOrders([order]);
+                    },
+                  })
+                }
+              >
+                <Trash2 size={15} /> Delete
+              </Button>
+            )}
           </div>
         )
       }

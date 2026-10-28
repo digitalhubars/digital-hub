@@ -76,7 +76,7 @@ export default function IntegrationModal({ store, onClose }) {
       if (needsCredentials && form.consumerSecret.length < 8) next.consumerSecret = 'Paste the consumer secret.';
     } else if (hasFields && (needsCredentials || typedKeys)) {
       fields.forEach((f) => {
-        if (!form.keys[f.key]?.trim()) next[f.key] = `Enter the ${f.label.toLowerCase()}.`;
+        if (!f.optional && !form.keys[f.key]?.trim()) next[f.key] = `Enter the ${f.label.toLowerCase()}.`;
       });
     }
     setErrors(next);
@@ -112,10 +112,16 @@ export default function IntegrationModal({ store, onClose }) {
       const keys = typedKeys ? typed() : undefined;
       const secretField = fields.find((f) => f.secret);
       const domain = keys?.domain?.toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+      // Etsy: "YourShop", "etsy.com/shop/YourShop" or "yourshop.etsy.com" → etsy.com/shop/YourShop
+      const etsyShop = keys?.shop?.replace(/^.*\/shop\//, '').replace(/^(?:https?:\/\/)?([^./]+)\.etsy\.com.*$/, '$1').replace(/[/?#].*$/, '');
       await saveStore(
         {
           ...base,
-          url: domain || (platformChanged ? '' : store.url) || (form.platform === 'Walmart' ? 'seller.walmart.com' : ''),
+          url:
+            domain ||
+            (etsyShop && !/^\d+$/.test(etsyShop) ? `etsy.com/shop/${etsyShop}` : '') ||
+            (platformChanged ? '' : store.url) ||
+            ({ Walmart: 'seller.walmart.com', Etsy: 'etsy.com' }[form.platform] || ''),
           keyHint: keys ? `••••${keys[secretField.key].slice(-4)}` : store.keyHint,
         },
         isNew,
@@ -292,7 +298,11 @@ export default function IntegrationModal({ store, onClose }) {
               </div>
               <p className={`text-xs ${ui.muted}`}>
                 The keys are checked with {form.platform} and saved encrypted on the server.
-                {auth === 'key' ? ' Products and orders sync in; edits made here aren’t sent back yet.' : ''}
+                {auth === 'key'
+                  ? platform.twoWay === 'orders'
+                    ? ' Products and orders sync in; order changes made here (fulfil, cancel, delete) are sent back.'
+                    : ' Products and orders sync in; edits made here aren’t sent back yet.'
+                  : ''}
               </p>
             </div>
           )}

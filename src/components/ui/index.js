@@ -4,7 +4,7 @@ export { default as Button } from './Button';
 export { default as Callout } from './Callout';
 export { Card, StatCard } from './Card';
 export { default as ConfirmDialog } from './ConfirmDialog';
-export { default as DataTable } from './DataTable';
+export { BulkBar, default as DataTable, useSelection } from './DataTable';
 export { default as Drawer } from './Drawer';
 export { default as Dropdown } from './Dropdown';
 export { default as Field } from './Field';

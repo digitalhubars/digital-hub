@@ -2,9 +2,9 @@
 // src/server/platforms/<platform>.js (one adapter per platform).
 //
 // auth: 'key'   → API fields typed into the modal (`fields`), checked and saved encrypted by the server
-//       'oauth' → "Sign in with …" opens the platform's official sign-in in a pop-up
-//                 (app keys live only in the server's environment variables)
+//       'oauth' → the app keys are typed, then the seller approves access once in a pop-up
 //       'csv'   → no API; orders and listings are imported from CSV files
+// twoWay: true → product and order edits are sent back; 'orders' → only order changes
 // live: 'webhooks' → changes arrive in real time; otherwise the background sync (every 15 minutes)
 
 export const PLATFORMS = {
@@ -19,7 +19,9 @@ export const PLATFORMS = {
     keysLabel: 'Client ID + Secret',
     button: 'bg-[#008060] text-white hover:bg-[#006e52]',
     live: 'webhooks',
-    scopes: ['Products & inventory (read)', 'Orders, fulfillments & refunds (read)', 'Customers (read)'],
+    // Order changes (fulfil, cancel, delete) are sent back; product edits stay in Digital Hub.
+    twoWay: 'orders',
+    scopes: ['Products & inventory (read)', 'Orders & fulfillments (read, write)', 'Customers (read)'],
     // App made in the Shopify Dev Dashboard (dev.shopify.com) and installed on the store.
     fields: [
       { key: 'domain', label: 'Store domain', placeholder: 'your-store.myshopify.com or your own domain' },
@@ -28,7 +30,7 @@ export const PLATFORMS = {
         key: 'clientSecret',
         label: 'Client secret',
         secret: true,
-        hint: 'Shopify Dev Dashboard → your app → Settings → Credentials. The app must be installed on this store, with scopes read_products, read_inventory, read_orders, read_fulfillments, read_customers.',
+        hint: 'Shopify Dev Dashboard → your app → Settings → Credentials. The app must be installed on this store, with scopes read_products, read_inventory, read_orders, read_fulfillments, read_customers, plus write_orders and write_merchant_managed_fulfillment_orders to update orders from Digital Hub.',
       },
     ],
     // Alternative: an Admin API access token from an existing custom app (no live updates).
@@ -39,7 +41,7 @@ export const PLATFORMS = {
         label: 'Admin API access token',
         placeholder: 'shpat_…',
         secret: true,
-        hint: 'Shopify admin → Settings → Apps → Develop apps → your app → API credentials. Scopes: read_products, read_inventory, read_orders, read_fulfillments, read_customers.',
+        hint: 'Shopify admin → Settings → Apps → Develop apps → your app → API credentials. Scopes: read_products, read_inventory, read_orders, read_fulfillments, read_customers (add write_orders and write_merchant_managed_fulfillment_orders to update orders).',
       },
     ],
     tone: 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300',
@@ -98,17 +100,24 @@ export const PLATFORMS = {
   Etsy: {
     slug: 'etsy',
     api: 'Etsy Open API v3',
-    auth: 'oauth',
+    auth: 'key',
     idLabel: 'Listing ID',
     account: 'Shop',
     portal: 'Etsy',
     connectLabel: 'Connect Etsy',
     button: 'bg-[#F1641E] text-white hover:bg-[#D9561A]',
-    scopes: ['Shop (read)', 'Listings (read)', 'Orders (read)'],
-    // The store's Etsy app (etsy.com/developers/your-apps; must be approved). Etsy then asks the seller to approve once.
+    // The store's Etsy app (etsy.com/developers/your-apps; must be approved). No sign-in pop-up.
     fields: [
       { key: 'keystring', label: 'Keystring (Client ID)', placeholder: 'e.g. 1aa2bb33c44d55eeeeee6fff' },
-      { key: 'sharedSecret', label: 'Shared secret (Client secret)', secret: true, hint: 'Add this callback URL on the Etsy app:', callback: 'etsy' },
+      { key: 'sharedSecret', label: 'Shared secret (Client secret)', secret: true },
+      { key: 'shop', label: 'Shop name or ID', placeholder: 'YourShop (from etsy.com/shop/YourShop)' },
+      {
+        key: 'refreshToken',
+        label: 'Refresh token (for orders)',
+        secret: true,
+        optional: true,
+        hint: 'Optional. Listings sync with the app keys alone; Etsy shares orders only with an OAuth token of the shop owner. Paste a refresh token issued to this same Etsy app to sync orders too.',
+      },
     ],
     tone: 'border-orange-200 bg-orange-50 text-orange-800 dark:border-orange-500/30 dark:bg-orange-500/10 dark:text-orange-300',
     dot: 'bg-orange-500 dark:bg-orange-400',

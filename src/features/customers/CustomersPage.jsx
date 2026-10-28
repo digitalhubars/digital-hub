@@ -1,8 +1,8 @@
-import { Download, FileDown } from 'lucide-react';
+import { Copy, Download, FileDown, Mail } from 'lucide-react';
 import { StoreBadge } from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import { Card } from '../../components/ui/Card';
-import DataTable from '../../components/ui/DataTable';
+import DataTable, { BulkBar, useSelection } from '../../components/ui/DataTable';
 import PageHeader from '../../components/ui/PageHeader';
 import { useApp } from '../../context/AppContext';
 import { downloadCsv, formatDate } from '../../lib/format';
@@ -10,7 +10,7 @@ import { downloadPdf } from '../../lib/pdf';
 import { ui } from '../../styles/ui';
 
 export default function CustomersPage() {
-  const { access, storeIds, storeOf, customers, money, q, openDrawer, settings } = useApp();
+  const { access, storeIds, storeOf, customers, money, q, openDrawer, settings, showToast } = useApp();
 
   const rows = customers
     .filter(
@@ -20,10 +20,22 @@ export default function CustomersPage() {
     )
     .sort((a, b) => b.spent - a.spent);
 
-  const exportCsv = () =>
+  const selection = useSelection(rows);
+  const emails = () => [...new Set(selection.selected.map((c) => c.email).filter(Boolean))];
+  const copyEmails = async () => {
+    const list = emails();
+    try {
+      await navigator.clipboard.writeText(list.join(', '));
+      showToast({ title: `${list.length} email address${list.length === 1 ? '' : 'es'} copied` });
+    } catch {
+      showToast({ tone: 'danger', title: 'Couldn’t copy', body: 'Your browser blocked the clipboard.' });
+    }
+  };
+
+  const exportCsv = (list = rows) =>
     downloadCsv(
       'customers.csv',
-      rows.map((c) => ({ name: c.name, email: c.email, store: storeOf(c.storeId)?.name, orders: c.orderCount, spent: c.spent.toFixed(2) })),
+      list.map((c) => ({ name: c.name, email: c.email, store: storeOf(c.storeId)?.name, orders: c.orderCount, spent: c.spent.toFixed(2) })),
     );
 
   const exportPdf = () =>
@@ -63,7 +75,7 @@ export default function CustomersPage() {
               <Button onClick={exportPdf}>
                 <FileDown size={15} /> PDF
               </Button>
-              <Button onClick={exportCsv}>
+              <Button onClick={() => exportCsv()}>
                 <Download size={15} /> CSV
               </Button>
             </>
@@ -71,7 +83,21 @@ export default function CustomersPage() {
         }
       />
       <Card title={`${rows.length} customer${rows.length === 1 ? '' : 's'}`}>
+        <BulkBar selection={selection}>
+          {access.exportData && (
+            <Button size="sm" onClick={() => exportCsv(selection.selected)}>
+              <Download size={13} /> Export CSV
+            </Button>
+          )}
+          <Button size="sm" onClick={copyEmails} disabled={!emails().length}>
+            <Copy size={13} /> Copy emails
+          </Button>
+          <a href={`mailto:?bcc=${encodeURIComponent(emails().join(','))}`} className={`inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800 ${emails().length ? '' : 'pointer-events-none opacity-50'}`}>
+            <Mail size={13} /> Email
+          </a>
+        </BulkBar>
         <DataTable
+          selection={selection}
           columns={[
             { key: 'name', label: 'Name', primary: true, render: (c) => <span className={`font-medium ${ui.h}`}>{c.name}</span> },
             { key: 'email', label: 'Email' },

@@ -8,8 +8,8 @@ export const dynamic = 'force-dynamic';
 /**
  * Saves the credentials typed for a store, after checking them with the platform; nothing is
  * saved if the platform refuses them.
- * - Key stores (Shopify Client ID + Secret or token, Walmart): connected right away.
- * - eBay, Etsy, TikTok Shop: their app keys are saved, then the seller approves access once.
+ * - Key stores (Shopify Client ID + Secret or token, Etsy app keys + shop, Walmart): connected right away.
+ * - eBay, TikTok Shop: their app keys are saved, then the seller approves access once.
  *   The same app as before keeps the existing approval.
  */
 export const POST = route(async (request, { storeId, input }) => {

@@ -1,13 +1,14 @@
 import { useState } from 'react';
-import { DollarSign, Download, FileDown, Receipt, ShoppingCart, TriangleAlert } from 'lucide-react';
+import { CircleCheck, CircleX, DollarSign, Download, Eye, FileDown, Loader, Receipt, ShoppingCart, Trash2, TriangleAlert } from 'lucide-react';
+import ActionMenu from '../../components/ui/ActionMenu';
 import Button from '../../components/ui/Button';
 import { Card, StatCard } from '../../components/ui/Card';
-import DataTable from '../../components/ui/DataTable';
+import DataTable, { BulkBar, useSelection } from '../../components/ui/DataTable';
 import PageHeader from '../../components/ui/PageHeader';
 import PeriodSelect from '../../components/ui/PeriodSelect';
 import Select from '../../components/ui/Select';
 import { useApp } from '../../context/AppContext';
-import { PLATFORM_NAMES } from '../../data/platforms';
+import { PLATFORM_NAMES, PLATFORMS } from '../../data/platforms';
 import { downloadCsv, formatDate } from '../../lib/format';
 import { downloadPdf } from '../../lib/pdf';
 import { ORDER_STATUSES, STATUS } from '../../styles/ui';
@@ -15,7 +16,8 @@ import { orderSummary } from '../dashboard/useDashboardData';
 import { orderColumns } from './orderColumns';
 
 export default function OrdersPage() {
-  const { role, access, scopedStores, storeIds, storeOf, customerOf, orders, products, settings, money, q, openDrawer, period } = useApp();
+  const { role, isAdmin, access, scopedStores, storeIds, storeOf, customerOf, orders, products, settings, money, q, openDrawer, period, askConfirm, updateOrdersStatus, deleteOrders } =
+    useApp();
   const [storeFilter, setStoreFilter] = useState('all');
   const [platformFilter, setPlatformFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -34,10 +36,80 @@ export default function OrdersPage() {
       (!q || [o.number, customerOf(o.customerId)?.name, storeOf(o.storeId)?.name].some((v) => String(v).toLowerCase().includes(q))),
   );
 
-  const exportCsv = () =>
+  const selection = useSelection(rows);
+  const canEdit = access.editOrders && role !== 'client';
+  const canDelete = isAdmin && role === 'admin';
+
+  const setStatus = (list, status) => {
+    const label = STATUS[status][0].toLowerCase();
+    const send = () => {
+      updateOrdersStatus(list, status);
+      selection.clear();
+    };
+    if (list.length === 1) return send();
+    return askConfirm({
+      title: `Mark ${list.length} orders as ${label}?`,
+      body: 'Each order is updated in Digital Hub and sent to its store (WooCommerce, Shopify, eBay).',
+      confirmLabel: `Mark ${label}`,
+      onConfirm: send,
+    });
+  };
+
+  const confirmDelete = (list) => {
+    const platforms = [...new Set(list.map((o) => storeOf(o.storeId)?.platform).filter(Boolean))];
+    const sentTo = platforms.filter((p) => p === 'WooCommerce' || PLATFORMS[p]?.twoWay === 'orders');
+    askConfirm({
+      title: list.length === 1 ? `Delete order ${list[0].number}?` : `Delete ${list.length} orders?`,
+      body: [
+        sentTo.length ? `The order${list.length === 1 ? ' is' : 's are'} also deleted on ${sentTo.join(' and ')} (WooCommerce moves orders to the trash).` : null,
+        platforms.some((p) => !sentTo.includes(p)) ? 'Other platforms don’t allow deleting orders, so those are removed from Digital Hub only.' : null,
+        'This can’t be undone here.',
+      ]
+        .filter(Boolean)
+        .join(' '),
+      confirmLabel: 'Delete',
+      onConfirm: () => {
+        deleteOrders(list);
+        selection.clear();
+      },
+    });
+  };
+
+  const statusItems = (list) =>
+    [
+      ['processing', Loader],
+      ['fulfilled', CircleCheck],
+      ['cancelled', CircleX],
+    ].map(([status, icon]) => ({
+      label: `Mark ${STATUS[status][0].toLowerCase()}`,
+      icon,
+      onClick: () => setStatus(list, status),
+      hidden: !canEdit || list.every((o) => o.status === status),
+    }));
+
+  const columns = [
+    ...orderColumns(storeOf, customerOf, money, true),
+    {
+      key: 'actions',
+      label: '',
+      align: 'right',
+      actions: true,
+      render: (o) => (
+        <ActionMenu
+          items={[
+            { label: 'View details', icon: Eye, onClick: () => openDrawer('order', o.id) },
+            ...statusItems([o]),
+            { label: 'Delete', icon: Trash2, danger: true, onClick: () => confirmDelete([o]), hidden: !canDelete },
+          ]}
+        />
+      ),
+    },
+  ];
+
+  const exportCsv = (list = rows) =>
     downloadCsv(
       'orders.csv',
-      rows.map((o) => ({
+      list.map((o) => ({
         order: o.number,
         placed: new Date(o.placedAt).toISOString(),
         customer: customerOf(o.customerId)?.name,
@@ -98,7 +170,7 @@ export default function OrdersPage() {
                 <Button onClick={exportPdf}>
                   <FileDown size={15} /> PDF
                 </Button>
-                <Button onClick={exportCsv}>
+                <Button onClick={() => exportCsv()}>
                   <Download size={15} /> CSV
                 </Button>
               </>
@@ -152,10 +224,33 @@ export default function OrdersPage() {
           </div>
         }
       >
+        {(canEdit || canDelete) && (
+          <BulkBar selection={selection}>
+            {canEdit && (
+              <Select
+                value=""
+                onChange={(status) => status && setStatus(selection.selected, status)}
+                className="w-auto py-1.5"
+                options={[{ value: '', label: 'Change status…' }, ...ORDER_STATUSES.map((st) => ({ value: st, label: STATUS[st][0] }))]}
+              />
+            )}
+            {access.exportData && (
+              <Button size="sm" onClick={() => exportCsv(selection.selected)}>
+                <Download size={13} /> Export CSV
+              </Button>
+            )}
+            {canDelete && (
+              <Button size="sm" variant="danger" onClick={() => confirmDelete(selection.selected)}>
+                <Trash2 size={13} /> Delete
+              </Button>
+            )}
+          </BulkBar>
+        )}
         <DataTable
-          columns={orderColumns(storeOf, customerOf, money, true)}
+          columns={columns}
           rows={rows}
           pageSize={10}
+          selection={canEdit || canDelete ? selection : undefined}
           onRowClick={(o) => openDrawer('order', o.id)}
           empty={period === 'all' ? 'No orders match these filters.' : `No orders ${summary.periodName.toLowerCase()} match these filters.`}
         />

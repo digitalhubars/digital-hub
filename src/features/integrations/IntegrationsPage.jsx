@@ -4,7 +4,7 @@ import ActionMenu from '../../components/ui/ActionMenu';
 import { Badge, StoreBadge } from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import { Card, StatCard } from '../../components/ui/Card';
-import DataTable from '../../components/ui/DataTable';
+import DataTable, { BulkBar, useSelection } from '../../components/ui/DataTable';
 import PageHeader from '../../components/ui/PageHeader';
 import Select from '../../components/ui/Select';
 import { useApp } from '../../context/AppContext';
@@ -41,7 +41,7 @@ function ConnectPanel({ stores, onConnect }) {
                 <StoreBadge store={{ platform: name, name: '' }} showStore={false} />
                 {count > 0 && <span className={`text-xs ${ui.muted}`}>{count} connected</span>}
               </div>
-              <p className={`mt-3 text-xs font-medium ${ui.h}`}>Credentials: {(p.fields || []).map((f) => f.label.replace(/ \(.*\)$/, '')).join(', ')}</p>
+              <p className={`mt-3 text-xs font-medium ${ui.h}`}>Credentials: {(p.fields || []).filter((f) => !f.optional).map((f) => f.label.replace(/ \(.*\)$/, '')).join(', ')}</p>
               <p className={`mt-1 flex-1 text-xs ${ui.muted}`}>
                 {p.auth === 'oauth' ? `${name} then asks you to approve access once. ` : ''}
                 {p.live === 'webhooks' ? 'Live updates as they happen.' : 'Synced automatically every 15 minutes.'}
@@ -106,6 +106,36 @@ export default function IntegrationsPage() {
   const clientsOf = (storeId) => clients.filter((c) => c.storeIds.includes(storeId));
   const active = stores.filter((s) => s.status === 'active');
   const platformsInUse = PLATFORM_NAMES.filter((p) => stores.some((s) => s.platform === p));
+  const selection = useSelection(rows);
+
+  // Bulk actions run one store at a time, then show a single summary.
+  const syncSelected = async () => {
+    const list = selection.selected.filter((s) => s.status === 'active' && !s.sample && !isCsvPlatform(s.platform));
+    selection.clear();
+    if (!list.length) return showToast({ title: 'Nothing to sync', body: 'Paused, sample and CSV stores are skipped.' });
+    showToast({ pending: true, title: `Syncing ${list.length} store${list.length === 1 ? '' : 's'}…` });
+    for (const s of list) await resyncStore(s, { quiet: true });
+    return showToast({ title: `Synced ${list.length} store${list.length === 1 ? '' : 's'}` });
+  };
+  const setPaused = (paused) => {
+    const list = selection.selected.filter((s) => (s.status === 'paused') !== paused);
+    selection.clear();
+    list.forEach(toggleStorePause);
+    showToast({ title: list.length ? `${list.length} store${list.length === 1 ? '' : 's'} ${paused ? 'paused' : 'resumed'}` : `Already ${paused ? 'paused' : 'active'}` });
+  };
+  const disconnectSelected = () => {
+    const list = selection.selected;
+    askConfirm({
+      title: `Disconnect ${list.length} store${list.length === 1 ? '' : 's'}?`,
+      body: 'This deletes the saved keys and removes these stores’ synced products, orders and customers from Digital Hub. Nothing is deleted on the platforms themselves.',
+      confirmLabel: 'Disconnect',
+      onConfirm: async () => {
+        selection.clear();
+        for (const s of list) await deleteStore(s);
+        showToast({ title: `${list.length} store${list.length === 1 ? '' : 's'} disconnected` });
+      },
+    });
+  };
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -145,8 +175,23 @@ export default function IntegrationsPage() {
           />
         }
       >
+        <BulkBar selection={selection}>
+          <Button size="sm" onClick={syncSelected}>
+            <RefreshCw size={13} /> Sync
+          </Button>
+          <Button size="sm" onClick={() => setPaused(true)}>
+            <Pause size={13} /> Pause
+          </Button>
+          <Button size="sm" onClick={() => setPaused(false)}>
+            <Play size={13} /> Resume
+          </Button>
+          <Button size="sm" variant="danger" onClick={disconnectSelected}>
+            <Trash2 size={13} /> Disconnect
+          </Button>
+        </BulkBar>
         <DataTable
           rows={rows}
+          selection={selection}
           empty="No integrations for this platform yet."
           columns={[
             {

@@ -4,7 +4,7 @@ import ActionMenu from '../../components/ui/ActionMenu';
 import { Badge, PlatformDot } from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import { Card, StatCard } from '../../components/ui/Card';
-import DataTable from '../../components/ui/DataTable';
+import DataTable, { BulkBar, useSelection } from '../../components/ui/DataTable';
 import PageHeader from '../../components/ui/PageHeader';
 import SearchInput from '../../components/ui/SearchInput';
 import Select from '../../components/ui/Select';
@@ -21,7 +21,7 @@ const permissionSummary = (permissions) => {
 
 // Used as the sidebar "Clients" page and, `embedded`, inside Settings → Clients & access.
 export default function ClientsPage({ embedded }) {
-  const { clients, storeOf, q, deleteClient, setClientStatus, resendInvite, viewAsClient, askConfirm, settings } = useApp();
+  const { clients, storeOf, q, deleteClient, setClientStatus, resendInvite, viewAsClient, askConfirm, settings, showToast } = useApp();
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [editing, setEditing] = useState(null);
@@ -32,6 +32,21 @@ export default function ClientsPage({ embedded }) {
     (c) => (statusFilter === 'all' || c.status === statusFilter) && (!ql || [c.company, c.contact, c.email].some((v) => v.toLowerCase().includes(ql))),
   );
   const count = (status) => clients.filter((c) => c.status === status).length;
+  const selection = useSelection(rows);
+
+  const bulk = ({ title, body, confirmLabel, run, done }) => {
+    const list = selection.selected;
+    askConfirm({
+      title: title(list),
+      body,
+      confirmLabel,
+      onConfirm: () => {
+        list.forEach(run);
+        selection.clear();
+        showToast({ title: done(list) });
+      },
+    });
+  };
   const accessClient = accessFor && clients.find((c) => c.id === accessFor);
 
   const exportPdf = () =>
@@ -111,8 +126,54 @@ export default function ClientsPage({ embedded }) {
           </div>
         }
       >
+        <BulkBar selection={selection}>
+          <Button
+            size="sm"
+            onClick={() =>
+              bulk({
+                title: (list) => `Suspend ${list.length} client${list.length === 1 ? '' : 's'}?`,
+                body: 'They will be signed out and can’t sign in until you reactivate them. Their stores keep syncing.',
+                confirmLabel: 'Suspend',
+                run: (c) => c.status !== 'suspended' && setClientStatus(c, 'suspended'),
+                done: (list) => `${list.length} client${list.length === 1 ? '' : 's'} suspended`,
+              })
+            }
+          >
+            <Pause size={13} /> Suspend
+          </Button>
+          <Button
+            size="sm"
+            onClick={() =>
+              bulk({
+                title: (list) => `Reactivate ${list.length} client${list.length === 1 ? '' : 's'}?`,
+                body: 'They can sign in again and see their stores.',
+                confirmLabel: 'Reactivate',
+                run: (c) => c.status === 'suspended' && setClientStatus(c, 'active'),
+                done: (list) => `${list.length} client${list.length === 1 ? '' : 's'} reactivated`,
+              })
+            }
+          >
+            <Play size={13} /> Reactivate
+          </Button>
+          <Button
+            size="sm"
+            variant="danger"
+            onClick={() =>
+              bulk({
+                title: (list) => `Delete ${list.length} client${list.length === 1 ? '' : 's'}?`,
+                body: 'This removes their logins and store access. Store data stays in Digital Hub.',
+                confirmLabel: 'Delete',
+                run: deleteClient,
+                done: (list) => `${list.length} client${list.length === 1 ? '' : 's'} deleted`,
+              })
+            }
+          >
+            <Trash2 size={13} /> Delete
+          </Button>
+        </BulkBar>
         <DataTable
           rows={rows}
+          selection={selection}
           empty="No clients yet. Create one to give someone access to their stores."
           columns={[
             {

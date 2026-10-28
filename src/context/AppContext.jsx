@@ -305,10 +305,13 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
   const pushToStore = (table, id, before) =>
     callApi('sync/push', { table, id, before }).catch((err) => ({ state: 'error', error: callError(err) }));
 
+  // Whether edits to this table reach the platform (twoWay: true, or 'orders' for order changes only).
+  const sendsBack = (platform, table) => [true, table].includes(PLATFORMS[platform]?.twoWay);
+
   const reportSync = async (collectionName, id, { title, success, store, before }) => {
     // Sample, paused and import-only stores answer at once: the server marks the row synced
     // (samples), leaves it pending (paused) or records that the platform doesn't take edits.
-    if (store?.sample || store?.status === 'paused' || (store && !PLATFORMS[store.platform]?.twoWay)) {
+    if (store?.sample || store?.status === 'paused' || (store && !sendsBack(store.platform, collectionName))) {
       pushToStore(collectionName, id, before);
       if (store.sample) return showToast({ title: success, body: `${store.name} is a sample store, so nothing was sent.` });
       if (store.status === 'paused') return showToast({ title: 'Saved. Waiting to sync', body: `${store.name} is paused. The change goes out when it resumes.` });
@@ -361,6 +364,26 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
     return reportSync('products', product.id, { title: `Deleting in ${store.platform}…`, success: `${product.title} deleted`, store });
   };
 
+  /** Bulk delete: removes the products here, then deletes each in its store; one toast at the end. */
+  const deleteProducts = async (list) => {
+    if (list.length === 1) return deleteProduct(list[0]);
+    const ids = new Set(list.map((p) => p.id));
+    try {
+      await setProducts((all) => all.filter((p) => !ids.has(p.id)));
+    } catch {
+      return undefined;
+    }
+    log(`Deleted ${list.length} products`, 'product');
+    showToast({ pending: true, title: `Deleting ${list.length} products…` });
+    const failed = [];
+    for (const product of list) {
+      const result = await pushToStore('products', product.id);
+      if (result.state === 'error') failed.push(`${product.title}: ${result.error}`);
+    }
+    if (failed.length) return showToast({ tone: 'danger', title: `${list.length - failed.length} of ${list.length} deleted in the stores`, body: failed.slice(0, 3).join(' · ') });
+    return showToast({ title: `${list.length} products deleted` });
+  };
+
   const updateOrderStatus = async (order, status) => {
     const store = storeOf(order.storeId);
     const label = STATUS[status][0].toLowerCase();
@@ -371,6 +394,62 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
     }
     log(`Marked order ${order.number} as ${label}`, 'order');
     return reportSync('orders', order.id, { title: `Updating order in ${store.platform}…`, success: `Order ${order.number} is now ${label}`, store });
+  };
+
+  /** Bulk status change: one toast for the lot, naming the orders the stores refused. */
+  const updateOrdersStatus = async (list, status) => {
+    if (list.length === 1) return updateOrderStatus(list[0], status);
+    const label = STATUS[status][0].toLowerCase();
+    const ids = new Set(list.map((o) => o.id));
+    try {
+      await setOrders((all) => all.map((o) => (ids.has(o.id) ? { ...o, status, ...stamp() } : o)));
+    } catch {
+      return undefined;
+    }
+    log(`Marked ${list.length} orders as ${label}`, 'order');
+    showToast({ pending: true, title: `Updating ${list.length} orders…` });
+    const failed = [];
+    let localOnly = 0;
+    for (const order of list) {
+      const store = storeOf(order.storeId);
+      const result = await pushToStore('orders', order.id);
+      if (store && !store.sample && !sendsBack(store.platform, 'orders')) localOnly += 1;
+      else if (result.state === 'error') failed.push(`${order.number}: ${result.error}`);
+    }
+    if (failed.length) {
+      return showToast({ tone: 'danger', title: `${list.length - failed.length} of ${list.length} orders updated`, body: failed.slice(0, 3).join(' · ') });
+    }
+    return showToast({
+      title: `${list.length} orders marked ${label}`,
+      body: localOnly ? `${localOnly} are on platforms that don’t take order edits yet, so they changed in Digital Hub only.` : undefined,
+    });
+  };
+
+  /** Deletes orders on their stores (WooCommerce: trash; Shopify: delete) and in Digital Hub. */
+  const deleteOrders = async (list) => {
+    const byId = new Map(list.map((o) => [o.id, o]));
+    showToast({ pending: true, title: list.length === 1 ? `Deleting order ${list[0].number}…` : `Deleting ${list.length} orders…` });
+    let results;
+    try {
+      ({ results } = await callApi('orders/delete', { ids: list.map((o) => o.id) }));
+    } catch (err) {
+      return showToast({ tone: 'danger', title: 'Couldn’t delete the orders', body: callError(err) });
+    }
+    const failed = results.filter((r) => r.state === 'error');
+    const local = results.filter((r) => r.state === 'local');
+    const done = results.length - failed.length;
+    if (done) log(`Deleted ${done === 1 ? `order ${byId.get(results.find((r) => r.state !== 'error').id)?.number}` : `${done} orders`}`, 'order');
+    if (failed.length) {
+      return showToast({
+        tone: 'danger',
+        title: done ? `${done} of ${results.length} orders deleted` : 'The store didn’t delete the order',
+        body: failed.slice(0, 3).map((r) => `${byId.get(r.id)?.number}: ${r.error}`).join(' · '),
+      });
+    }
+    return showToast({
+      title: done === 1 ? `Order ${list[0].number} deleted` : `${done} orders deleted`,
+      body: local.length ? `${local.length} ${local.length === 1 ? 'is' : 'are'} on a platform that doesn’t allow deleting orders, so ${local.length === 1 ? 'it was' : 'they were'} removed from Digital Hub only.` : undefined,
+    });
   };
 
   // ---- Integrations --------------------------------------------------------
@@ -779,7 +858,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
     syncing, syncingStores, toast, showToast, dismissToast, log, markAllRead,
     confirmDialog, askConfirm, closeConfirm, drawer, openDrawer, closeDrawer,
     // actions
-    saveProduct, deleteProduct, updateOrderStatus,
+    saveProduct, deleteProduct, deleteProducts, updateOrderStatus, updateOrdersStatus, deleteOrders,
     resyncStore, testConnection, saveStore, connectStore, authorizeStore, reauthorizeStore: authorizeStore, reloadStores, importStoreCsv, setStoreClients, toggleStorePause, deleteStore,
     saveClient, deleteClient, setClientStatus, resendInvite, viewAsClient,
     saveGroup, deleteGroup, updateSettings, updateProfile, saveClientAccess, saveManagerGroup,

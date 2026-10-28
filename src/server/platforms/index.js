@@ -49,6 +49,6 @@ const byPlatform = Object.fromEntries(ADAPTERS.map((a) => [a.platform, a]));
 export const getAdapter = (platform) => byPlatform[platform] || null;
 
 // URL-safe names used in the OAuth callback path: /api/integrations/callback/<slug>
-const SLUGS = { Amazon: 'amazon', eBay: 'ebay', Etsy: 'etsy', Shopify: 'shopify', 'TikTok Shop': 'tiktok' };
+const SLUGS = { Amazon: 'amazon', eBay: 'ebay', Shopify: 'shopify', 'TikTok Shop': 'tiktok' };
 export const callbackSlug = (platform) => SLUGS[platform];
 export const platformFromSlug = (slug) => Object.keys(SLUGS).find((p) => SLUGS[p] === slug) || null;

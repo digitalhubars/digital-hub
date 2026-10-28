@@ -16,7 +16,7 @@ import { PlatformError, num, requestJson, sleep } from './http';
 
 const VERSION = process.env.SHOPIFY_API_VERSION || '2026-07';
 const MAX_PAGES = 40;
-const SCOPES = 'read_products,read_inventory,read_orders,read_fulfillments,read_customers';
+const SCOPES = 'read_products,read_inventory,read_orders,read_fulfillments,read_customers,write_orders,write_merchant_managed_fulfillment_orders';
 const P = 'Shopify';
 
 const WEBHOOK_TOPICS = [
@@ -142,23 +142,47 @@ const PRODUCTS = `query($after: String, $query: String) {
   }
 }`;
 
+const ORDER_FIELDS = `
+  legacyResourceId name createdAt updatedAt cancelledAt currencyCode email
+  displayFinancialStatus displayFulfillmentStatus
+  totalPriceSet { shopMoney { amount } }
+  subtotalPriceSet { shopMoney { amount } }
+  totalShippingPriceSet { shopMoney { amount } }
+  totalTaxSet { shopMoney { amount } }
+  totalRefundedSet { shopMoney { amount } }
+  fulfillments(first: 5) { status createdAt trackingInfo(first: 1) { company number url } }
+  customer { legacyResourceId firstName lastName email }
+  lineItems(first: 20) { nodes { title quantity originalUnitPriceSet { shopMoney { amount } } product { legacyResourceId } } }`;
+
 const ORDERS = `query($after: String, $query: String) {
   orders(first: 25, after: $after, query: $query, sortKey: UPDATED_AT) {
     pageInfo { hasNextPage endCursor }
-    nodes {
-      legacyResourceId name createdAt updatedAt cancelledAt currencyCode email
-      displayFinancialStatus displayFulfillmentStatus
-      totalPriceSet { shopMoney { amount } }
-      subtotalPriceSet { shopMoney { amount } }
-      totalShippingPriceSet { shopMoney { amount } }
-      totalTaxSet { shopMoney { amount } }
-      totalRefundedSet { shopMoney { amount } }
-      fulfillments(first: 5) { status createdAt trackingInfo(first: 1) { company number url } }
-      customer { legacyResourceId firstName lastName email }
-      lineItems(first: 20) { nodes { title quantity originalUnitPriceSet { shopMoney { amount } } product { legacyResourceId } } }
-    }
+    nodes { ${ORDER_FIELDS} }
   }
 }`;
+
+const ORDER = `query($id: ID!) { order(id: $id) { ${ORDER_FIELDS} } }`;
+
+const OPEN_FULFILLMENT_ORDERS = `query($id: ID!) {
+  order(id: $id) { fulfillmentOrders(first: 20) { nodes { id status } } }
+}`;
+
+const orderGid = (externalId) => `gid://shopify/Order/${externalId}`;
+
+/** First user error of a mutation result, as a PlatformError. */
+function userErrors(result, what) {
+  const errors = result?.userErrors || result?.orderCancelUserErrors || [];
+  if (errors.length) throw new PlatformError(`Shopify didn’t ${what}: ${errors.map((e) => e.message).join('; ')}`);
+}
+
+/** Shopify's answer when the app lacks a write scope, explained. */
+const scopeHint = (err) =>
+  /access denied|scope/i.test(err.message)
+    ? new PlatformError(
+        'Shopify refused the change: the app needs the write_orders and write_merchant_managed_fulfillment_orders scopes. Add them in the Dev Dashboard, release a new version, then re-save the store’s keys.',
+        { auth: false },
+      )
+    : err;
 
 const CUSTOMERS = `query($after: String, $query: String) {
   customers(first: 100, after: $after, query: $query, sortKey: UPDATED_AT) {
@@ -173,6 +197,45 @@ function orderStatus(o) {
   if (o.displayFulfillmentStatus === 'FULFILLED') return 'fulfilled';
   if (['PARTIALLY_FULFILLED', 'IN_PROGRESS'].includes(o.displayFulfillmentStatus)) return 'processing';
   return 'unfulfilled';
+}
+
+function orderRecord(store, o) {
+  const c = o.customer;
+  const money = (set) => num(set?.shopMoney?.amount);
+  const shipped = (o.fulfillments || []).find((f) => f.status === 'SUCCESS') || o.fulfillments?.[0];
+  const tracking = shipped?.trackingInfo?.[0];
+  return {
+    storeId: store.id,
+    externalId: o.legacyResourceId,
+    number: o.name,
+    items: o.lineItems.nodes.map((li) => ({
+      productId: li.product ? `${store.id}_p${li.product.legacyResourceId}` : null,
+      title: li.title,
+      qty: li.quantity,
+      price: money(li.originalUnitPriceSet),
+    })),
+    subtotal: money(o.subtotalPriceSet),
+    shipping: money(o.totalShippingPriceSet),
+    tax: money(o.totalTaxSet),
+    total: money(o.totalPriceSet),
+    refunded: money(o.totalRefundedSet),
+    currency: o.currencyCode,
+    status: orderStatus(o),
+    shippingInfo: {
+      status: shipped ? 'shipped' : o.cancelledAt ? null : 'awaiting',
+      carrier: tracking?.company || null,
+      tracking: tracking?.number || null,
+      trackingUrl: tracking?.url || null,
+      shippedAt: shipped ? Date.parse(shipped.createdAt) : null,
+    },
+    placedAt: Date.parse(o.createdAt),
+    updatedAt: Date.parse(o.updatedAt),
+    customer: {
+      externalId: c?.legacyResourceId || null,
+      name: [c?.firstName, c?.lastName].filter(Boolean).join(' ') || c?.email || o.email || 'Customer',
+      email: c?.email || o.email || '',
+    },
+  };
 }
 
 /** Webhooks: X-Shopify-Hmac-Sha256 = base64 HMAC-SHA256 of the raw body, keyed by the Client Secret. */
@@ -243,44 +306,63 @@ export default {
 
   async syncOrders({ store, creds }, { since }) {
     const nodes = await paginate(creds, ORDERS, (d) => d.orders, { query: updatedSince(since) });
-    return nodes.map((o) => {
-      const c = o.customer;
-      const money = (set) => num(set?.shopMoney?.amount);
-      const shipped = (o.fulfillments || []).find((f) => f.status === 'SUCCESS') || o.fulfillments?.[0];
-      const tracking = shipped?.trackingInfo?.[0];
-      return {
-        storeId: store.id,
-        externalId: o.legacyResourceId,
-        number: o.name,
-        items: o.lineItems.nodes.map((li) => ({
-          productId: li.product ? `${store.id}_p${li.product.legacyResourceId}` : null,
-          title: li.title,
-          qty: li.quantity,
-          price: money(li.originalUnitPriceSet),
-        })),
-        subtotal: money(o.subtotalPriceSet),
-        shipping: money(o.totalShippingPriceSet),
-        tax: money(o.totalTaxSet),
-        total: money(o.totalPriceSet),
-        refunded: money(o.totalRefundedSet),
-        currency: o.currencyCode,
-        status: orderStatus(o),
-        shippingInfo: {
-          status: shipped ? 'shipped' : o.cancelledAt ? null : 'awaiting',
-          carrier: tracking?.company || null,
-          tracking: tracking?.number || null,
-          trackingUrl: tracking?.url || null,
-          shippedAt: shipped ? Date.parse(shipped.createdAt) : null,
-        },
-        placedAt: Date.parse(o.createdAt),
-        updatedAt: Date.parse(o.updatedAt),
-        customer: {
-          externalId: c?.legacyResourceId || null,
-          name: [c?.firstName, c?.lastName].filter(Boolean).join(' ') || c?.email || o.email || 'Customer',
-          email: c?.email || o.email || '',
-        },
-      };
-    });
+    return nodes.map((o) => orderRecord(store, o));
+  },
+
+  pushEdits: true,
+
+  /**
+   * Order changes made in Digital Hub: "fulfilled" fulfils every open fulfillment order (no
+   * customer email), "cancelled" cancels the order on Shopify (restocks, no refund). Other
+   * statuses follow from what happens on Shopify, so they're refused with an explanation.
+   */
+  async pushOrder({ store, creds }, order) {
+    const id = orderGid(order.externalId);
+    try {
+      if (order.status === 'fulfilled') {
+        const data = await gql(creds, OPEN_FULFILLMENT_ORDERS, { id });
+        const open = (data.order?.fulfillmentOrders?.nodes || []).filter((f) => ['OPEN', 'IN_PROGRESS', 'SCHEDULED', 'ON_HOLD'].includes(f.status));
+        if (open.length) {
+          const result = await gql(
+            creds,
+            `mutation($fulfillment: FulfillmentInput!) { fulfillmentCreate(fulfillment: $fulfillment) { fulfillment { id } userErrors { message } } }`,
+            { fulfillment: { notifyCustomer: false, lineItemsByFulfillmentOrder: open.map((f) => ({ fulfillmentOrderId: f.id })) } },
+          );
+          userErrors(result.fulfillmentCreate, 'fulfil the order');
+        }
+      } else if (order.status === 'cancelled') {
+        const cancel = (refundArg) =>
+          gql(
+            creds,
+            `mutation($id: ID!) { orderCancel(orderId: $id, reason: OTHER, restock: true, notifyCustomer: false, ${refundArg}) { job { id } orderCancelUserErrors { message } } }`,
+            { id },
+          );
+        // Newer API versions replaced `refund` with `refundMethod`.
+        const result = await cancel('refundMethod: { originalPaymentMethodsRefund: false }').catch(() => cancel('refund: false'));
+        userErrors(result.orderCancel, 'cancel the order');
+      } else if (order.status === 'refunded') {
+        throw new PlatformError('Refunds move money, so make them in Shopify (Orders → Refund). The order updates here on the next sync.');
+      } else {
+        throw new PlatformError('Shopify sets “unfulfilled” and “processing” itself. From Digital Hub you can mark an order fulfilled, cancel it or delete it.');
+      }
+    } catch (err) {
+      throw scopeHint(err);
+    }
+    // Cancelling runs as a job on Shopify; the fresh order may still show it as open for a moment.
+    const fresh = (await gql(creds, ORDER, { id })).order;
+    if (!fresh) return { status: order.status };
+    const { customer: _c, ...fields } = orderRecord(store, fresh);
+    return order.status === 'cancelled' ? { ...fields, status: 'cancelled' } : fields;
+  },
+
+  /** Deletes the order on Shopify (Shopify refuses orders paid through an online gateway). */
+  async deleteOrder({ creds }, order) {
+    try {
+      const result = await gql(creds, `mutation($id: ID!) { orderDelete(orderId: $id) { deletedId userErrors { message } } }`, { id: orderGid(order.externalId) });
+      userErrors(result.orderDelete, 'delete the order');
+    } catch (err) {
+      throw scopeHint(err);
+    }
   },
 
   async syncCustomers({ store, creds }, { since }) {
