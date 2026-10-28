@@ -55,3 +55,9 @@ export function diffFields(previous, next, fields) {
 }
 
 export const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The first few words of a long title ("2 Pack Halloween Ghost Decorations…"); the full title goes in a tooltip. */
+export function shortTitle(title, words = 5) {
+  const parts = String(title || '').trim().split(/\s+/);
+  return parts.length > words ? `${parts.slice(0, words).join(' ').replace(/[|,:;–-]+$/, '')}…` : parts.join(' ');
+}

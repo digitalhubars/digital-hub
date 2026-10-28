@@ -37,13 +37,13 @@ export default {
 
   async syncProducts({ store, creds }, { since }) {
     const changed = since ? { modified_after: new Date(since - 120000).toISOString() } : {};
-    const list = await wrap(() => wooFetchAll(creds, '/products', { status: 'any', ...changed }));
+    const list = await wrap(() => wooFetchAll(creds, '/products', { status: 'any', ...changed }, 100));
     return list.map((p) => (p.status === 'trash' ? { externalId: String(p.id), deleted: true } : productFromWoo(store.id, p)));
   },
 
   async syncOrders({ store, creds }, { since }) {
     const changed = since ? { modified_after: new Date(since - 120000).toISOString() } : {};
-    const list = await wrap(() => wooFetchAll(creds, '/orders', changed));
+    const list = await wrap(() => wooFetchAll(creds, '/orders', changed, 200));
     return list.map((o) => {
       if (o.status === 'trash') return { externalId: String(o.id), deleted: true };
       const b = o.billing || {};

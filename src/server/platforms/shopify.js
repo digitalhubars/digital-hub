@@ -10,13 +10,14 @@ import { PlatformError, num, requestJson, sleep } from './http';
 //   show up in real time.
 // - Or an Admin API access token (shpat_…) from an older custom app: no webhooks, so changes
 //   arrive on each background sync.
-// Scopes to give the app: read_products, read_inventory, read_orders, read_fulfillments,
-// read_customers (read_all_orders for orders older than 60 days). Customer names/emails also
+// Scopes to give the app: see SCOPES. Without read_all_orders Shopify only shares the last 60 days
+// of orders; the write_* scopes let Digital Hub send product and order changes back. Customer names/emails also
 // need the app's "Protected customer data" access in the Dev Dashboard.
 
 const VERSION = process.env.SHOPIFY_API_VERSION || '2026-07';
-const MAX_PAGES = 40;
-const SCOPES = 'read_products,read_inventory,read_orders,read_fulfillments,read_customers,write_orders,write_merchant_managed_fulfillment_orders';
+const MAX_PAGES = 200;
+const SCOPES =
+  'read_products,write_products,read_inventory,write_inventory,read_locations,read_orders,read_all_orders,write_orders,read_fulfillments,write_merchant_managed_fulfillment_orders,read_customers';
 const P = 'Shopify';
 
 const WEBHOOK_TOPICS = [
@@ -155,7 +156,7 @@ const ORDER_FIELDS = `
   lineItems(first: 20) { nodes { title quantity originalUnitPriceSet { shopMoney { amount } } product { legacyResourceId } } }`;
 
 const ORDERS = `query($after: String, $query: String) {
-  orders(first: 25, after: $after, query: $query, sortKey: UPDATED_AT) {
+  orders(first: 100, after: $after, query: $query, sortKey: UPDATED_AT) {
     pageInfo { hasNextPage endCursor }
     nodes { ${ORDER_FIELDS} }
   }
@@ -175,14 +176,101 @@ function userErrors(result, what) {
   if (errors.length) throw new PlatformError(`Shopify didn’t ${what}: ${errors.map((e) => e.message).join('; ')}`);
 }
 
-/** Shopify's answer when the app lacks a write scope, explained. */
-const scopeHint = (err) =>
-  /access denied|scope/i.test(err.message)
-    ? new PlatformError(
-        'Shopify refused the change: the app needs the write_orders and write_merchant_managed_fulfillment_orders scopes. Add them in the Dev Dashboard, release a new version, then re-save the store’s keys.',
-        { auth: false },
-      )
-    : err;
+const isScopeError = (err) => /access denied|scope|not approved to access/i.test(err.message);
+
+/**
+ * Runs a change with the store's token. If Shopify says the app lacks a scope, a new token is
+ * fetched once (scopes added in the Dev Dashboard only reach new tokens), then the missing
+ * scopes are named.
+ */
+async function withScopes(creds, needed, run) {
+  try {
+    return await run(creds);
+  } catch (err) {
+    if (!isScopeError(err)) throw err;
+    let fresh = creds;
+    if (creds.mode !== 'token' && creds.clientId && creds.clientSecret) {
+      fresh = await clientToken(creds);
+      try {
+        return await run(fresh);
+      } catch (again) {
+        if (!isScopeError(again)) throw again;
+      }
+    }
+    const granted = String(fresh.scope || '').split(',');
+    const missing = needed.filter((x) => !granted.includes(x));
+    throw new PlatformError(
+      `Shopify didn’t allow this change: the store’s app is missing ${(missing.length ? missing : needed).join(', ')}. In the Shopify Dev Dashboard open the app → Versions → create a version with those scopes → Release, then approve the update on the store (Settings → Apps). Digital Hub picks the new scopes up automatically.`,
+    );
+  }
+}
+
+const ORDER_SCOPES = ['write_orders', 'write_merchant_managed_fulfillment_orders'];
+const PRODUCT_SCOPES = ['write_products', 'write_inventory', 'read_locations'];
+
+const productGid = (externalId) => `gid://shopify/Product/${externalId}`;
+
+const PRODUCT_TARGET = `query($id: ID!) {
+  product(id: $id) { id variants(first: 1) { nodes { id inventoryItem { id tracked } } } }
+  locations(first: 1) { nodes { id } }
+}`;
+
+/** Title, type, status, price, SKU and stock of a product's first variant. Returns its ID. */
+async function saveProduct(creds, product, before) {
+  const changed = (key) => !before || before[key] !== product[key];
+  const isNew = !product.externalId || product.externalId === 'pending';
+  const status = product.status === 'draft' ? 'DRAFT' : 'ACTIVE';
+
+  let productId = isNew ? null : productGid(product.externalId);
+  if (isNew) {
+    const created = await gql(creds, `mutation($product: ProductCreateInput!) { productCreate(product: $product) { product { id } userErrors { message } } }`, {
+      product: { title: product.title, productType: product.category || '', status },
+    });
+    userErrors(created.productCreate, 'create the product');
+    productId = created.productCreate.product.id;
+  } else if (changed('title') || changed('category') || changed('status')) {
+    const updated = await gql(creds, `mutation($product: ProductUpdateInput!) { productUpdate(product: $product) { product { id } userErrors { message } } }`, {
+      product: { id: productId, title: product.title, productType: product.category || '', status },
+    });
+    userErrors(updated.productUpdate, 'update the product');
+  }
+
+  const target = await gql(creds, PRODUCT_TARGET, { id: productId });
+  const variant = target.product?.variants?.nodes?.[0];
+  if (!variant) throw new PlatformError('Shopify has no variant for this product.');
+
+  if (isNew || changed('price') || changed('sku') || (product.stock != null && !variant.inventoryItem?.tracked)) {
+    const result = await gql(
+      creds,
+      `mutation($productId: ID!, $variants: [ProductVariantsBulkInput!]!) { productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { message } } }`,
+      {
+        productId,
+        variants: [
+          {
+            id: variant.id,
+            price: String(Number(product.price) || 0),
+            inventoryItem: { sku: product.sku || '', ...(product.stock != null ? { tracked: true } : {}) },
+          },
+        ],
+      },
+    );
+    userErrors(result.productVariantsBulkUpdate, 'update the price');
+  }
+
+  const location = target.locations?.nodes?.[0];
+  if (product.stock != null && (isNew || changed('stock')) && location) {
+    const result = await gql(creds, `mutation($input: InventorySetQuantitiesInput!) { inventorySetQuantities(input: $input) { userErrors { message } } }`, {
+      input: {
+        name: 'available',
+        reason: 'correction',
+        ignoreCompareQuantity: true,
+        quantities: [{ inventoryItemId: variant.inventoryItem.id, locationId: location.id, quantity: Math.max(0, Math.round(product.stock)) }],
+      },
+    });
+    userErrors(result.inventorySetQuantities, 'update the stock');
+  }
+  return productId.split('/').pop();
+}
 
 const CUSTOMERS = `query($after: String, $query: String) {
   customers(first: 100, after: $after, query: $query, sortKey: UPDATED_AT) {
@@ -316,9 +404,11 @@ export default {
    * customer email), "cancelled" cancels the order on Shopify (restocks, no refund). Other
    * statuses follow from what happens on Shopify, so they're refused with an explanation.
    */
-  async pushOrder({ store, creds }, order) {
+  async pushOrder({ store, creds: saved }, order) {
     const id = orderGid(order.externalId);
-    try {
+    let creds = saved;
+    await withScopes(saved, ORDER_SCOPES, async (c) => {
+      creds = c;
       if (order.status === 'fulfilled') {
         const data = await gql(creds, OPEN_FULFILLMENT_ORDERS, { id });
         const open = (data.order?.fulfillmentOrders?.nodes || []).filter((f) => ['OPEN', 'IN_PROGRESS', 'SCHEDULED', 'ON_HOLD'].includes(f.status));
@@ -345,9 +435,7 @@ export default {
       } else {
         throw new PlatformError('Shopify sets “unfulfilled” and “processing” itself. From Digital Hub you can mark an order fulfilled, cancel it or delete it.');
       }
-    } catch (err) {
-      throw scopeHint(err);
-    }
+    });
     // Cancelling runs as a job on Shopify; the fresh order may still show it as open for a moment.
     const fresh = (await gql(creds, ORDER, { id })).order;
     if (!fresh) return { status: order.status };
@@ -357,12 +445,28 @@ export default {
 
   /** Deletes the order on Shopify (Shopify refuses orders paid through an online gateway). */
   async deleteOrder({ creds }, order) {
-    try {
-      const result = await gql(creds, `mutation($id: ID!) { orderDelete(orderId: $id) { deletedId userErrors { message } } }`, { id: orderGid(order.externalId) });
+    await withScopes(creds, ORDER_SCOPES, async (c) => {
+      const result = await gql(c, `mutation($id: ID!) { orderDelete(orderId: $id) { deletedId userErrors { message } } }`, { id: orderGid(order.externalId) });
       userErrors(result.orderDelete, 'delete the order');
-    } catch (err) {
-      throw scopeHint(err);
-    }
+    });
+  },
+
+  /** Product edits, new products and deletes made in Digital Hub. Returns the fields to save. */
+  async pushProduct({ creds }, product, before) {
+    return withScopes(creds, PRODUCT_SCOPES, async (c) => {
+      if (product.pendingDelete) {
+        if (product.externalId && product.externalId !== 'pending') {
+          const result = await gql(c, `mutation($input: ProductDeleteInput!) { productDelete(input: $input) { deletedProductId userErrors { message } } }`, {
+            input: { id: productGid(product.externalId) },
+          });
+          const gone = (result.productDelete?.userErrors || []).some((e) => /not exist|not found/i.test(e.message));
+          if (!gone) userErrors(result.productDelete, 'delete the product');
+        }
+        return { deleted: true };
+      }
+      const externalId = await saveProduct(c, product, before);
+      return { externalId, status: product.stock === 0 && product.status === 'active' ? 'out_of_stock' : product.status };
+    });
   },
 
   async syncCustomers({ store, creds }, { since }) {

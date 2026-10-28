@@ -8,7 +8,7 @@ import PageHeader from '../../components/ui/PageHeader';
 import PeriodSelect from '../../components/ui/PeriodSelect';
 import Select from '../../components/ui/Select';
 import { useApp } from '../../context/AppContext';
-import { PLATFORM_NAMES, PLATFORMS } from '../../data/platforms';
+import { PLATFORM_NAMES } from '../../data/platforms';
 import { downloadCsv, formatDate } from '../../lib/format';
 import { downloadPdf } from '../../lib/pdf';
 import { ORDER_STATUSES, STATUS } from '../../styles/ui';
@@ -57,7 +57,7 @@ export default function OrdersPage() {
 
   const confirmDelete = (list) => {
     const platforms = [...new Set(list.map((o) => storeOf(o.storeId)?.platform).filter(Boolean))];
-    const sentTo = platforms.filter((p) => p === 'WooCommerce' || PLATFORMS[p]?.twoWay === 'orders');
+    const sentTo = platforms.filter((p) => ['WooCommerce', 'Shopify'].includes(p));
     askConfirm({
       title: list.length === 1 ? `Delete order ${list[0].number}?` : `Delete ${list.length} orders?`,
       body: [

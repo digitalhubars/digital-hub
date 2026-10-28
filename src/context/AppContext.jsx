@@ -130,10 +130,11 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
   // ---- UI state ------------------------------------------------------------
   const [search, setSearch] = useState('');
 
-  // Date period for the Dashboard and Orders page (remembered in this browser).
+  // Date period for the Dashboard and Orders page (remembered in this browser; starts at "All time",
+  // so every synced order shows until a shorter period is picked).
   const [period, setPeriodState] = useState(() => {
     try {
-      const saved = localStorage.getItem('digital-hub:period');
+      const saved = localStorage.getItem('digital-hub:period-v2');
       return PERIODS.some((p) => p.value === saved) ? saved : DEFAULT_PERIOD;
     } catch {
       return DEFAULT_PERIOD;
@@ -142,7 +143,7 @@ export function AppProvider({ children, profile: initialProfile, route, navigate
   const setPeriod = (value) => {
     setPeriodState(value);
     try {
-      localStorage.setItem('digital-hub:period', value);
+      localStorage.setItem('digital-hub:period-v2', value);
     } catch {
       // ignore
     }

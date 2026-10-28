@@ -19,9 +19,8 @@ export const PLATFORMS = {
     keysLabel: 'Client ID + Secret',
     button: 'bg-[#008060] text-white hover:bg-[#006e52]',
     live: 'webhooks',
-    // Order changes (fulfil, cancel, delete) are sent back; product edits stay in Digital Hub.
-    twoWay: 'orders',
-    scopes: ['Products & inventory (read)', 'Orders & fulfillments (read, write)', 'Customers (read)'],
+    twoWay: true,
+    scopes: ['Products & inventory (read, write)', 'All orders & fulfillments (read, write)', 'Customers (read)'],
     // App made in the Shopify Dev Dashboard (dev.shopify.com) and installed on the store.
     fields: [
       { key: 'domain', label: 'Store domain', placeholder: 'your-store.myshopify.com or your own domain' },
@@ -30,7 +29,7 @@ export const PLATFORMS = {
         key: 'clientSecret',
         label: 'Client secret',
         secret: true,
-        hint: 'Shopify Dev Dashboard → your app → Settings → Credentials. The app must be installed on this store, with scopes read_products, read_inventory, read_orders, read_fulfillments, read_customers, plus write_orders and write_merchant_managed_fulfillment_orders to update orders from Digital Hub.',
+        hint: 'Shopify Dev Dashboard → your app → Settings → Credentials. The app must be installed on this store, with scopes read_products, write_products, read_inventory, write_inventory, read_locations, read_orders, read_all_orders, write_orders, read_fulfillments, write_merchant_managed_fulfillment_orders, read_customers (read_all_orders brings in orders older than 60 days).',
       },
     ],
     // Alternative: an Admin API access token from an existing custom app (no live updates).
@@ -41,7 +40,7 @@ export const PLATFORMS = {
         label: 'Admin API access token',
         placeholder: 'shpat_…',
         secret: true,
-        hint: 'Shopify admin → Settings → Apps → Develop apps → your app → API credentials. Scopes: read_products, read_inventory, read_orders, read_fulfillments, read_customers (add write_orders and write_merchant_managed_fulfillment_orders to update orders).',
+        hint: 'Shopify admin → Settings → Apps → Develop apps → your app → API credentials. Scopes: read_products, write_products, read_inventory, write_inventory, read_locations, read_orders, read_all_orders, write_orders, read_fulfillments, write_merchant_managed_fulfillment_orders, read_customers.',
       },
     ],
     tone: 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300',

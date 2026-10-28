@@ -1,6 +1,7 @@
 import { Card } from '../../components/ui/Card';
 import LinkButton from '../../components/ui/LinkButton';
 import { useApp } from '../../context/AppContext';
+import { shortTitle } from '../../lib/format';
 import { ui } from '../../styles/ui';
 
 export default function LowStockCard({ products }) {
@@ -14,7 +15,9 @@ export default function LowStockCard({ products }) {
         {products.slice(0, 5).map((p) => (
           <li key={p.id} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm sm:px-5">
             <div className="min-w-0">
-              <p className={`truncate ${ui.h}`}>{p.title}</p>
+              <p className={`truncate ${ui.h}`} title={p.title}>
+                {shortTitle(p.title)}
+              </p>
               <p className={`truncate text-xs ${ui.muted}`}>{storeOf(p.storeId)?.name}</p>
             </div>
             <span className={`shrink-0 font-medium tabular-nums ${p.stock === 0 ? 'text-red-700 dark:text-red-400' : 'text-amber-700 dark:text-amber-400'}`}>

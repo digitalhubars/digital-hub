@@ -9,7 +9,7 @@ import PageHeader from '../../components/ui/PageHeader';
 import Select from '../../components/ui/Select';
 import { useApp } from '../../context/AppContext';
 import { PLATFORM_NAMES } from '../../data/platforms';
-import { downloadCsv } from '../../lib/format';
+import { downloadCsv, shortTitle } from '../../lib/format';
 import { downloadPdf } from '../../lib/pdf';
 import { ui } from '../../styles/ui';
 import ProductModal from './ProductModal';
@@ -42,7 +42,9 @@ export default function ProductsPage() {
       primary: true,
       render: (p) => (
         <div className="min-w-0">
-          <p className={`truncate font-medium ${ui.h}`}>{p.title}</p>
+          <p className={`truncate font-medium ${ui.h}`} title={p.title}>
+            {shortTitle(p.title)}
+          </p>
           <p className={`text-xs font-normal ${ui.muted}`}>
             {p.sku}
             {p.category ? ` · ${p.category}` : ''}
@@ -102,7 +104,7 @@ export default function ProductsPage() {
                 onClick={() =>
                   askConfirm({
                     title: 'Delete product?',
-                    body: `“${p.title}” will be removed from Digital Hub and deleted in ${storeOf(p.storeId)?.name}.`,
+                    body: `“${shortTitle(p.title, 8)}” will be removed from Digital Hub and deleted in ${storeOf(p.storeId)?.name}.`,
                     onConfirm: () => deleteProduct(p),
                   })
                 }

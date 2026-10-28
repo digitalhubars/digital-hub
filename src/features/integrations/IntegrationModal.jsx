@@ -299,8 +299,8 @@ export default function IntegrationModal({ store, onClose }) {
               <p className={`text-xs ${ui.muted}`}>
                 The keys are checked with {form.platform} and saved encrypted on the server.
                 {auth === 'key'
-                  ? platform.twoWay === 'orders'
-                    ? ' Products and orders sync in; order changes made here (fulfil, cancel, delete) are sent back.'
+                  ? platform.twoWay
+                    ? ' Products and orders sync in, and changes made here are sent to the store straight away.'
                     : ' Products and orders sync in; edits made here aren’t sent back yet.'
                   : ''}
               </p>

@@ -6,7 +6,7 @@ import Callout from '../../components/ui/Callout';
 import Drawer from '../../components/ui/Drawer';
 import Select from '../../components/ui/Select';
 import { useApp } from '../../context/AppContext';
-import { formatDateTime } from '../../lib/format';
+import { formatDateTime, shortTitle } from '../../lib/format';
 import { ORDER_STATUSES, STATUS, ui } from '../../styles/ui';
 
 export default function OrderDrawer({ order, onClose }) {
@@ -96,8 +96,8 @@ export default function OrderDrawer({ order, onClose }) {
       <ul className={`rounded-lg border border-gray-200 dark:border-gray-800 ${ui.divide}`}>
         {order.items.map((item, i) => (
           <li key={i} className="flex items-center justify-between gap-3 px-3 py-2.5 text-sm">
-            <span className={`min-w-0 truncate ${ui.body}`}>
-              {item.title} <span className={ui.muted}>× {item.qty}</span>
+            <span className={`min-w-0 truncate ${ui.body}`} title={item.title}>
+              {shortTitle(item.title, 6)} <span className={ui.muted}>× {item.qty}</span>
             </span>
             <span className={`shrink-0 tabular-nums ${ui.h}`}>{money(item.qty * item.price)}</span>
           </li>

@@ -234,6 +234,14 @@ async function pushWithAdapter(table, record, before, store) {
       await remove(table, record.id);
       return { state: 'gone' };
     }
+    // A product created on the platform: keep it under the platform's ID so syncs update it.
+    const canonical = table === 'products' && result?.externalId ? productDocId(store.id, result.externalId) : record.id;
+    if (canonical !== record.id) {
+      const { id: _old, ...fields } = record;
+      await upsert('products', [{ ...fields, ...result, id: canonical, pendingDelete: false, syncState: 'synced', syncError: null, syncedAt: Date.now() }]);
+      await remove('products', record.id);
+      return { state: 'gone' };
+    }
     await patch(table, record.id, { ...(result || {}), syncState: 'synced', syncError: null, syncedAt: Date.now() });
     return { state: 'synced' };
   } catch (err) {

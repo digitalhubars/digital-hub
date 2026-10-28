@@ -10,7 +10,7 @@ export const PERIODS = [
   { value: 'day', label: 'Today' },
 ];
 
-export const DEFAULT_PERIOD = 'month';
+export const DEFAULT_PERIOD = 'all';
 
 const COMPARE_LABEL = { year: 'last year', month: 'last month', week: 'last week', day: 'yesterday' };
 
